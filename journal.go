@@ -26,7 +26,7 @@ type JournalCollector struct {
 type JournalEntry interface {
 	PeerID() string
 	SealedAt() time.Time
-	Author() component.Component
+	Component() component.Component
 }
 
 type entry struct {
@@ -35,9 +35,9 @@ type entry struct {
 	component component.Component
 }
 
-func (e *entry) PeerID() string              { return e.peerID }
-func (e *entry) SealedAt() time.Time         { return e.sealedAt }
-func (e *entry) Author() component.Component { return e.component }
+func (e *entry) PeerID() string                 { return e.peerID }
+func (e *entry) SealedAt() time.Time            { return e.sealedAt }
+func (e *entry) Component() component.Component { return e.component }
 
 // ----------------------------------------------------------------------------
 // Journal Collector

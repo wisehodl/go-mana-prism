@@ -154,11 +154,21 @@ func (e *Embassy) Dispatch(url string) error {
 	subs := e.eventSubs
 	e.mu.Unlock()
 
+	at := time.Now()
+	if e.journals != nil {
+		c, _ := component.Get(e.ctx)
+		select {
+		case <-e.ctx.Done():
+			return fmt.Errorf("closing")
+		case e.journals <- NewPeerAddedJournal(url, c, PeerAddedData{At: at}):
+		}
+	}
+
 	for _, ch := range subs {
 		select {
 		case <-e.ctx.Done():
 			return fmt.Errorf("closing")
-		case ch <- NewPoolEvent(url, EventAdded, time.Now()):
+		case ch <- NewPoolEvent(url, EventAdded, at):
 		}
 	}
 
@@ -180,11 +190,21 @@ func (e *Embassy) Dismiss(url string) error {
 	subs := e.eventSubs
 	e.mu.Unlock()
 
+	at := time.Now()
+	if e.journals != nil {
+		c, _ := component.Get(e.ctx)
+		select {
+		case <-e.ctx.Done():
+			return fmt.Errorf("closing")
+		case e.journals <- NewPeerRemovedJournal(url, c, PeerRemovedData{At: at}):
+		}
+	}
+
 	for _, ch := range subs {
 		select {
 		case <-e.ctx.Done():
 			return fmt.Errorf("closing")
-		case ch <- NewPoolEvent(url, EventRemoved, time.Now()):
+		case ch <- NewPoolEvent(url, EventRemoved, at):
 		}
 	}
 
@@ -194,7 +214,6 @@ func (e *Embassy) Dismiss(url string) error {
 func (e *Embassy) Close() {
 	e.mu.Lock()
 	peers := e.peers
-	e.peers = make(map[string]bool)
 	e.mu.Unlock()
 
 	// dismiss peers
@@ -206,6 +225,9 @@ func (e *Embassy) Close() {
 	e.wg.Wait()
 
 	e.mu.Lock()
+	// reset peers after dismissal
+	e.peers = make(map[string]bool)
+
 	subs := e.eventSubs
 	e.eventSubs = make([]chan PoolEvent, 0)
 	e.mu.Unlock()
@@ -213,6 +235,10 @@ func (e *Embassy) Close() {
 	// close subs
 	for _, sub := range subs {
 		close(sub)
+	}
+
+	if e.journals != nil {
+		close(e.journals)
 	}
 }
 
@@ -281,22 +307,51 @@ func (e *Embassy) runEventRouter() {
 				return
 			}
 
+			url, err := honeybee.NormalizeURL(ev.ID)
+			if err != nil {
+				continue
+			}
+
+			if !e.HasPeer(url) {
+				continue
+			}
+
 			kind := convertPoolEvent[ev.Kind]
 
 			e.mu.Lock()
 			switch kind {
 			case EventConnected:
-				e.peers[ev.ID] = true
+				e.peers[url] = true
 			case EventDisconnected:
-				e.peers[ev.ID] = false
+				e.peers[url] = false
 			}
 			subs := e.eventSubs
+			canJournal := e.journals != nil
 			e.mu.Unlock()
+
+			if canJournal {
+				switch kind {
+				case EventConnected:
+					c, _ := component.Get(e.ctx)
+					select {
+					case <-e.ctx.Done():
+					case e.journals <- NewPeerConnectedJournal(
+						url, c, PeerConnectedData{At: ev.At}):
+					}
+				case EventDisconnected:
+					c, _ := component.Get(e.ctx)
+					select {
+					case <-e.ctx.Done():
+					case e.journals <- NewPeerDisconnectedJournal(
+						url, c, PeerDisconnectedData{At: ev.At}):
+					}
+				}
+			}
 
 			for _, ch := range subs {
 				select {
 				case <-e.ctx.Done():
-				case ch <- NewPoolEvent(ev.ID, kind, ev.At):
+				case ch <- NewPoolEvent(url, kind, ev.At):
 				}
 			}
 		}

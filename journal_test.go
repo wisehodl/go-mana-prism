@@ -158,8 +158,8 @@ func TestJournalCollector_ComponentIdentity(t *testing.T) {
 
 	typed, ok := received.(*testJournalEntry)
 	assert.True(t, ok, "should be correct concrete type")
-	assert.Equal(t, mod, typed.Author().Module())
-	assert.Equal(t, path, typed.Author().PathString())
+	assert.Equal(t, mod, typed.Component().Module())
+	assert.Equal(t, path, typed.Component().PathString())
 
 	jc.Close()
 }
