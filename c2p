@@ -1,0 +1,1 @@
+code2prompt -c -e bump.sh -e c2p -e go.sum
