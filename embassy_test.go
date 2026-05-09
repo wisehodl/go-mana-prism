@@ -1,0 +1,245 @@
+package prism
+
+import (
+	"context"
+	// "fmt"
+	"git.wisehodl.dev/jay/go-honeybee"
+	"github.com/stretchr/testify/assert"
+	"testing"
+	"time"
+)
+
+func TestEmbassyPoolEvents(t *testing.T) {
+	ctx := context.Background()
+	eventsCh := make(chan honeybee.OutboundPoolEvent)
+
+	pool := EmbassyPlugin{
+		Connect: func(id string) error { return nil },
+		Remove:  func(id string) error { return nil },
+		Send:    func(id string, data []byte) error { return nil },
+		Events:  eventsCh,
+	}
+
+	e := NewEmbassy(ctx, pool, nil, nil)
+	sub := e.Subscribe()
+
+	t.Run("added then removed", func(t *testing.T) {
+		err := e.Dispatch("wss://test")
+		assert.NoError(t, err)
+
+		Eventually(t, func() bool {
+			select {
+			default:
+				return false
+			case ev := <-sub:
+				return ev.Kind == EventAdded
+			}
+		}, "expected added event")
+
+		err = e.Dismiss("wss://test")
+		assert.NoError(t, err)
+
+		Eventually(t, func() bool {
+			select {
+			default:
+				return false
+			case ev := <-sub:
+				return ev.Kind == EventRemoved
+			}
+		}, "expected removed event")
+	})
+
+	t.Run("connected", func(t *testing.T) {
+		eventsCh <- honeybee.OutboundPoolEvent{
+			ID:   "wss://test",
+			Kind: honeybee.OutboundEventConnected,
+			At:   time.Now(),
+		}
+
+		Eventually(t, func() bool {
+			select {
+			default:
+				return false
+			case ev := <-sub:
+				return ev.Kind == EventConnected
+			}
+		}, "expected connected event")
+	})
+
+	t.Run("disconnected", func(t *testing.T) {
+		eventsCh <- honeybee.OutboundPoolEvent{
+			ID:   "wss://test",
+			Kind: honeybee.OutboundEventDisconnected,
+			At:   time.Now(),
+		}
+
+		Eventually(t, func() bool {
+			select {
+			default:
+				return false
+			case ev := <-sub:
+				return ev.Kind == EventDisconnected
+			}
+		}, "expected disconnected event")
+	})
+}
+
+func TestEmbassyPeerRegistry(t *testing.T) {
+	ctx := context.Background()
+	eventsCh := make(chan honeybee.OutboundPoolEvent)
+
+	pool := EmbassyPlugin{
+		Connect: func(id string) error { return nil },
+		Remove:  func(id string) error { return nil },
+		Send:    func(id string, data []byte) error { return nil },
+		Events:  eventsCh,
+	}
+
+	e := NewEmbassy(ctx, pool, nil, nil)
+
+	// add
+	e.Dispatch("wss://test")
+
+	assert.True(t, e.HasPeer("wss://test"))
+	assert.False(t, e.IsConnected("wss://test"))
+
+	// connect
+	eventsCh <- honeybee.OutboundPoolEvent{
+		ID:   "wss://test",
+		Kind: honeybee.OutboundEventConnected,
+		At:   time.Now(),
+	}
+
+	Eventually(t, func() bool {
+		exists := e.HasPeer("wss://test")
+		connected := e.IsConnected("wss://test")
+		return exists && connected
+	}, "expected: exists, connected")
+
+	// disconnect
+	eventsCh <- honeybee.OutboundPoolEvent{
+		ID:   "wss://test",
+		Kind: honeybee.OutboundEventDisconnected,
+		At:   time.Now(),
+	}
+
+	Eventually(t, func() bool {
+		exists := e.HasPeer("wss://test")
+		connected := e.IsConnected("wss://test")
+		return exists && !connected
+	}, "expected: exists, disconnected")
+
+	// remove
+	e.Dismiss("wss://test")
+
+	assert.False(t, e.HasPeer("wss://test"))
+	assert.False(t, e.IsConnected("wss://test"))
+}
+
+func TestEmbassyPeers(t *testing.T) {
+	ctx := context.Background()
+
+	pool := EmbassyPlugin{
+		Connect: func(id string) error { return nil },
+		Remove:  func(id string) error { return nil },
+		Send:    func(id string, data []byte) error { return nil },
+		Events:  nil,
+	}
+
+	e := NewEmbassy(ctx, pool, nil, nil)
+
+	assert.Len(t, e.Peers(), 0)
+
+	e.Dispatch("wss://test1")
+	e.Dispatch("wss://test2")
+	assert.Len(t, e.Peers(), 2)
+
+	e.Dismiss("wss://test2")
+	assert.Len(t, e.Peers(), 1)
+}
+
+func TestEmbassySubFanout(t *testing.T) {
+	ctx := context.Background()
+	eventsCh := make(chan honeybee.OutboundPoolEvent)
+
+	pool := EmbassyPlugin{
+		Connect: func(id string) error { return nil },
+		Remove:  func(id string) error { return nil },
+		Send:    func(id string, data []byte) error { return nil },
+		Events:  eventsCh,
+	}
+
+	e := NewEmbassy(ctx, pool, nil, nil)
+	sub1 := e.Subscribe()
+	sub2 := e.Subscribe()
+
+	e.Dispatch("wss://test")
+
+	Eventually(t, func() bool {
+		select {
+		default:
+			return false
+		case ev := <-sub1:
+			return ev.Kind == EventAdded
+		}
+	}, "expected added event on sub1")
+
+	Eventually(t, func() bool {
+		select {
+		default:
+			return false
+		case ev := <-sub2:
+			return ev.Kind == EventAdded
+		}
+	}, "expected added event on sub2")
+}
+
+func TestEmbassyClose(t *testing.T) {
+	ctx := context.Background()
+	eventsCh := make(chan honeybee.OutboundPoolEvent, 1)
+
+	pool := EmbassyPlugin{
+		Connect: func(id string) error { return nil },
+		Remove:  func(id string) error { return nil },
+		Send:    func(id string, data []byte) error { return nil },
+		Events:  eventsCh,
+	}
+
+	e := NewEmbassy(ctx, pool, nil, nil)
+	sub1 := e.Subscribe()
+	sub2 := e.Subscribe()
+
+	e.Dispatch("wss://test")
+
+	e.Close()
+
+	// peer gets removed
+	Eventually(t, func() bool {
+		select {
+		default:
+			return false
+		case ev := <-sub1:
+			return ev.ID == "wss://test" && ev.Kind == EventRemoved
+		}
+	}, "expected peer removed")
+
+	Eventually(t, func() bool {
+		select {
+		default:
+			return false
+		case ev := <-sub2:
+			return ev.ID == "wss://test" && ev.Kind == EventRemoved
+		}
+	}, "expected peer removed")
+
+	// peer list is empty
+	assert.False(t, e.HasPeer("wss://test"))
+	assert.Len(t, e.Peers(), 0)
+
+	// subs close
+	Eventually(t, func() bool {
+		_, ok1 := <-sub1
+		_, ok2 := <-sub2
+		return !ok1 && !ok2
+	}, "subs should close")
+}

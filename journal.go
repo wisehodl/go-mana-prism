@@ -53,7 +53,7 @@ func NewJournalCollector() *JournalCollector {
 	return nil
 }
 
-func (c *JournalCollector) Enroll() {}
+func (c *JournalCollector) Enroll(ch <-chan JournalEntry) {}
 
 func (c *JournalCollector) Close() {}
 
