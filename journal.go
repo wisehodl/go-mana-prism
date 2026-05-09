@@ -1,6 +1,8 @@
 package prism
 
 import (
+	"fmt"
+	"git.wisehodl.dev/jay/go-mana-component"
 	"sync"
 	"time"
 )
@@ -9,19 +11,11 @@ import (
 // Types
 // ----------------------------------------------------------------------------
 
-type JournalAuthor string
-
-const (
-	AuthorEmbassy    JournalAuthor = "prism.embassy"
-	AuthorReqManager JournalAuthor = "prism.req_manager"
-	AuthorStreamReq  JournalAuthor = "prism.stream_req"
-	AuthorQueryReq   JournalAuthor = "prism.query_req"
-)
-
 // JournalCollector
 
 type JournalCollector struct {
-	entries chan JournalEntry
+	out     chan JournalEntry
+	buffer  chan JournalEntry
 	mu      sync.Mutex
 	wg      sync.WaitGroup
 	closing bool
@@ -32,43 +26,115 @@ type JournalCollector struct {
 type JournalEntry interface {
 	PeerID() string
 	SealedAt() time.Time
-	Author() JournalAuthor
+	Author() component.Component
 }
 
 type entry struct {
-	peerID   string
-	sealedAt time.Time
-	author   JournalAuthor
+	peerID    string
+	sealedAt  time.Time
+	component component.Component
 }
 
-func (e *entry) PeerID() string        { return e.peerID }
-func (e *entry) SealedAt() time.Time   { return e.sealedAt }
-func (e *entry) Author() JournalAuthor { return e.author }
+func (e *entry) PeerID() string              { return e.peerID }
+func (e *entry) SealedAt() time.Time         { return e.sealedAt }
+func (e *entry) Author() component.Component { return e.component }
 
 // ----------------------------------------------------------------------------
 // Journal Collector
 // ----------------------------------------------------------------------------
 
 func NewJournalCollector() *JournalCollector {
+	c := &JournalCollector{
+		out:    make(chan JournalEntry),
+		buffer: make(chan JournalEntry, 1024),
+	}
+
+	go func() {
+		bufferedPipe(c.buffer, c.out)
+		close(c.out)
+	}()
+
+	return c
+}
+
+func (c *JournalCollector) Enroll(ch <-chan JournalEntry) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closing {
+		return fmt.Errorf("journal collector is closing")
+	}
+
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		for e := range ch {
+			c.buffer <- e
+		}
+	}()
+
 	return nil
 }
 
-func (c *JournalCollector) Enroll(ch <-chan JournalEntry) {}
+func (c *JournalCollector) Close() {
+	c.mu.Lock()
+	if c.closing {
+		c.mu.Unlock()
+		return
+	}
+	c.closing = true
+	c.mu.Unlock()
 
-func (c *JournalCollector) Close() {}
+	c.wg.Wait()
+	close(c.buffer)
+}
 
-func (c *JournalCollector) Entries() {}
+func (c *JournalCollector) Out() <-chan JournalEntry { return c.out }
 
 // ----------------------------------------------------------------------------
 // Journal Entries
 // ----------------------------------------------------------------------------
 
-func newEntry(peerID string, author JournalAuthor) *entry {
+func newEntry(peerID string, component component.Component) *entry {
 	return &entry{
-		peerID:   peerID,
-		author:   author,
-		sealedAt: time.Now(),
+		peerID:    peerID,
+		component: component,
+		sealedAt:  time.Now(),
 	}
+}
+
+// PeerAdded
+
+type PeerAddedJournal struct {
+	*entry
+	Data PeerAddedData
+}
+
+type PeerAddedData struct {
+	At time.Time
+}
+
+func NewPeerAddedJournal(
+	peerID string, component component.Component, data PeerAddedData,
+) PeerAddedJournal {
+	return PeerAddedJournal{entry: newEntry(peerID, component), Data: data}
+}
+
+// PeerRemoved
+
+type PeerRemovedJournal struct {
+	*entry
+	Data PeerRemovedData
+}
+
+type PeerRemovedData struct {
+	At time.Time
+}
+
+func NewPeerRemovedJournal(
+	peerID string, component component.Component, data PeerRemovedData,
+) PeerRemovedJournal {
+	return PeerRemovedJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // PeerConnected
@@ -83,9 +149,9 @@ type PeerConnectedData struct {
 }
 
 func NewPeerConnectedJournal(
-	peerID string, author JournalAuthor, data PeerConnectedData,
+	peerID string, component component.Component, data PeerConnectedData,
 ) PeerConnectedJournal {
-	return PeerConnectedJournal{entry: newEntry(peerID, author), Data: data}
+	return PeerConnectedJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // PeerDisconnected
@@ -100,9 +166,9 @@ type PeerDisconnectedData struct {
 }
 
 func NewPeerDisconnectedJournal(
-	peerID string, author JournalAuthor, data PeerDisconnectedData,
+	peerID string, component component.Component, data PeerDisconnectedData,
 ) PeerDisconnectedJournal {
-	return PeerDisconnectedJournal{entry: newEntry(peerID, author), Data: data}
+	return PeerDisconnectedJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // ReqQueued
@@ -120,9 +186,9 @@ type ReqQueuedData struct {
 }
 
 func NewReqQueuedJournal(
-	peerID string, author JournalAuthor, data ReqQueuedData,
+	peerID string, component component.Component, data ReqQueuedData,
 ) ReqQueuedJournal {
-	return ReqQueuedJournal{entry: newEntry(peerID, author), Data: data}
+	return ReqQueuedJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // CloseQueued
@@ -140,9 +206,9 @@ type CloseQueuedData struct {
 }
 
 func NewCloseQueuedJournal(
-	peerID string, author JournalAuthor, data CloseQueuedData,
+	peerID string, component component.Component, data CloseQueuedData,
 ) CloseQueuedJournal {
-	return CloseQueuedJournal{entry: newEntry(peerID, author), Data: data}
+	return CloseQueuedJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // ReqSendOutcome
@@ -163,9 +229,9 @@ type ReqSendOutcomeData struct {
 }
 
 func NewReqSendOutcomeJournal(
-	peerID string, author JournalAuthor, data ReqSendOutcomeData,
+	peerID string, component component.Component, data ReqSendOutcomeData,
 ) ReqSendOutcomeJournal {
-	return ReqSendOutcomeJournal{entry: newEntry(peerID, author), Data: data}
+	return ReqSendOutcomeJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // CloseSendOutcome
@@ -186,9 +252,9 @@ type CloseSendOutcomeData struct {
 }
 
 func NewCloseSendOutcomeJournal(
-	peerID string, author JournalAuthor, data CloseSendOutcomeData,
+	peerID string, component component.Component, data CloseSendOutcomeData,
 ) CloseSendOutcomeJournal {
-	return CloseSendOutcomeJournal{entry: newEntry(peerID, author), Data: data}
+	return CloseSendOutcomeJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // ReceivedEOSE
@@ -204,9 +270,9 @@ type ReceivedEOSEData struct {
 }
 
 func NewReceivedEOSEJournal(
-	peerID string, author JournalAuthor, data ReceivedEOSEData,
+	peerID string, component component.Component, data ReceivedEOSEData,
 ) ReceivedEOSEJournal {
-	return ReceivedEOSEJournal{entry: newEntry(peerID, author), Data: data}
+	return ReceivedEOSEJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // MissedEOSE
@@ -222,9 +288,9 @@ type MissedEOSEData struct {
 }
 
 func NewMissedEOSEJournal(
-	peerID string, author JournalAuthor, data MissedEOSEData,
+	peerID string, component component.Component, data MissedEOSEData,
 ) MissedEOSEJournal {
-	return MissedEOSEJournal{entry: newEntry(peerID, author), Data: data}
+	return MissedEOSEJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // ReceivedClosed
@@ -241,9 +307,9 @@ type ReceivedClosedData struct {
 }
 
 func NewReceivedClosedJournal(
-	peerID string, author JournalAuthor, data ReceivedClosedData,
+	peerID string, component component.Component, data ReceivedClosedData,
 ) ReceivedClosedJournal {
-	return ReceivedClosedJournal{entry: newEntry(peerID, author), Data: data}
+	return ReceivedClosedJournal{entry: newEntry(peerID, component), Data: data}
 }
 
 // ReqClosed
@@ -259,7 +325,7 @@ type ReqClosedData struct {
 }
 
 func NewReqClosedJournal(
-	peerID string, author JournalAuthor, data ReqClosedData,
+	peerID string, component component.Component, data ReqClosedData,
 ) ReqClosedJournal {
-	return ReqClosedJournal{entry: newEntry(peerID, author), Data: data}
+	return ReqClosedJournal{entry: newEntry(peerID, component), Data: data}
 }
