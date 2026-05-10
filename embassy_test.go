@@ -2,7 +2,6 @@ package prism
 
 import (
 	"context"
-	// "fmt"
 	"git.wisehodl.dev/jay/go-honeybee"
 	"github.com/stretchr/testify/assert"
 	"testing"
