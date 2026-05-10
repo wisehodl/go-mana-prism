@@ -3,6 +3,7 @@ package prism
 import (
 	"container/list"
 	"context"
+	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"log/slog"
 	"sync"
@@ -88,6 +89,7 @@ type Courier struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+	mu     sync.Mutex
 	wg     sync.WaitGroup
 	logger *slog.Logger
 }
@@ -199,6 +201,7 @@ func (c *Courier) HandleDisconnect() {
 }
 
 func (c *Courier) Close() {
+	c.command(&cmdCloseCourier{})
 	c.cancel()
 	c.wg.Wait()
 }
@@ -208,6 +211,7 @@ func (c *Courier) Close() {
 func (c *Courier) command(cmd courierCommand) {
 	select {
 	case <-c.ctx.Done():
+		fmt.Println("here")
 	case c.cmd <- cmd:
 	}
 }
@@ -362,5 +366,20 @@ func (cmd cmdHandleSendResult) apply(c *Courier) {
 	} else {
 		cmd.traveller.setSentAt(cmd.at)
 		c.doneOnce(cmd.traveller)
+	}
+}
+
+type cmdCloseCourier struct{}
+
+func (cmd cmdCloseCourier) apply(c *Courier) {
+	// cancel remaining letters
+	for {
+		t, ok := c.pop()
+		if !ok {
+			break
+		}
+		t.letter.cancel()
+		t.setMissedAt(time.Now())
+		c.doneOnce(t)
 	}
 }
