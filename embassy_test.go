@@ -103,7 +103,9 @@ func TestEmbassyPeerRegistry(t *testing.T) {
 	// add
 	e.Dispatch("wss://test")
 
-	assert.True(t, e.HasPeer("wss://test"))
+	url, ok := e.HasPeer("wss://test/")
+	assert.Equal(t, "wss://test", url)
+	assert.True(t, ok)
 	assert.False(t, e.IsConnected("wss://test"))
 
 	// connect
@@ -114,7 +116,7 @@ func TestEmbassyPeerRegistry(t *testing.T) {
 	}
 
 	Eventually(t, func() bool {
-		exists := e.HasPeer("wss://test")
+		_, exists := e.HasPeer("wss://test")
 		connected := e.IsConnected("wss://test")
 		return exists && connected
 	}, "expected: exists, connected")
@@ -127,7 +129,7 @@ func TestEmbassyPeerRegistry(t *testing.T) {
 	}
 
 	Eventually(t, func() bool {
-		exists := e.HasPeer("wss://test")
+		_, exists := e.HasPeer("wss://test")
 		connected := e.IsConnected("wss://test")
 		return exists && !connected
 	}, "expected: exists, disconnected")
@@ -135,7 +137,8 @@ func TestEmbassyPeerRegistry(t *testing.T) {
 	// remove
 	e.Dismiss("wss://test")
 
-	assert.False(t, e.HasPeer("wss://test"))
+	_, ok = e.HasPeer("wss://test")
+	assert.False(t, ok)
 	assert.False(t, e.IsConnected("wss://test"))
 }
 
@@ -236,7 +239,8 @@ func TestEmbassyClose(t *testing.T) {
 	}, "expected peer removed")
 
 	// peer list is empty
-	assert.False(t, e.HasPeer("wss://test"))
+	_, ok := e.HasPeer("wss://test")
+	assert.False(t, ok)
 	assert.Len(t, e.Peers(), 0)
 
 	// subs close

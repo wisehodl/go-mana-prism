@@ -78,7 +78,7 @@ func TestCourierMultipleSends(t *testing.T) {
 	c.HandleConnect()
 
 	outcomes := make([]LetterOutcome, 0, 2)
-	called := make(chan LetterOutcome, 4)
+	called := make(chan LetterOutcome, 2)
 	c.Enqueue(newTestLetter(ctx, 1), func(o LetterOutcome) { called <- o })
 	c.Enqueue(newTestLetter(ctx, 2), func(o LetterOutcome) { called <- o })
 

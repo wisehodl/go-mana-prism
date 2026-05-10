@@ -64,7 +64,7 @@ var convertPoolEvent = map[honeybee.OutboundPoolEventKind]PoolEventKind{
 
 type Adapter interface {
 	Peers() []string
-	HasPeer(id string) bool
+	HasPeer(id string) (string, bool)
 	IsConnected(id string) bool
 	Subscribe() <-chan PoolEvent
 	Send(id string, data Envelope) error
@@ -253,17 +253,17 @@ func (e *Embassy) Peers() []string {
 	return peers
 }
 
-func (e *Embassy) HasPeer(url string) bool {
+func (e *Embassy) HasPeer(url string) (string, bool) {
 	url, err := honeybee.NormalizeURL(url)
 	if err != nil {
-		return false
+		return "", false
 	}
 
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	_, ok := e.peers[url]
-	return ok
+	return url, ok
 }
 
 func (e *Embassy) IsConnected(url string) bool {
@@ -312,7 +312,7 @@ func (e *Embassy) runEventRouter() {
 				continue
 			}
 
-			if !e.HasPeer(url) {
+			if _, ok := e.HasPeer(url); !ok {
 				continue
 			}
 
@@ -384,8 +384,8 @@ func (h *Hotel) Peers() []string {
 	return nil
 }
 
-func (h *Hotel) HasPeer(id string) bool {
-	return false
+func (h *Hotel) HasPeer(id string) (string, bool) {
+	return "", false
 }
 
 func (h *Hotel) IsConnected(id string) bool {

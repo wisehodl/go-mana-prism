@@ -63,17 +63,19 @@ type LetterOutcome struct {
 // Postmaster
 
 type Postmaster struct {
-	couriers map[string]*Courier
-	events   <-chan PoolEvent // Adapter.Subscribe
-	send     PoolSendFunc     // Adapter.Send
-	counter  atomic.Uint64
+	couriers    map[string]*Courier
+	poolHasPeer func(id string) (string, bool)
+	poolEvents  <-chan PoolEvent // Adapter.Subscribe
+	poolSend    PoolSendFunc     // Adapter.Send
+	counter     atomic.Uint64
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.Mutex
-	wg     sync.WaitGroup
-	cfg    postmasterConfig
-	logger *slog.Logger
+	ctx     context.Context
+	cancel  context.CancelFunc
+	mu      sync.RWMutex
+	wg      sync.WaitGroup
+	cfg     postmasterConfig
+	handler slog.Handler
+	logger  *slog.Logger
 }
 
 // Courier
@@ -102,33 +104,190 @@ type courierCommand interface {
 
 // Options
 
+const (
+	DefaultPostmasterDeadline = 30 * time.Second
+)
+
 type PostmasterOption func(*postmasterConfig)
 
-type postmasterConfig struct{}
+type postmasterConfig struct {
+	defaultDeadline time.Duration
+}
+
+func WithDefaultDeadline(d time.Duration) PostmasterOption {
+	return func(c *postmasterConfig) { c.defaultDeadline = d }
+}
+
+type SendOption func(*sendConfig)
+
+type sendConfig struct {
+	deadline time.Duration
+}
+
+func WithDeadline(d time.Duration) SendOption {
+	return func(c *sendConfig) { c.deadline = d }
+}
 
 // ----------------------------------------------------------------------------
 // Postmaster
 // ----------------------------------------------------------------------------
 
 func NewPostmaster(
-	pool *Adapter,
-	send PoolSendFunc,
+	ctx context.Context,
+	poolHasPeer func(id string) (string, bool),
+	poolEvents <-chan PoolEvent,
+	poolSendFunc PoolSendFunc,
+	handler slog.Handler,
 	opts ...PostmasterOption,
 ) *Postmaster {
-	return nil
+	ctx, cancel := context.WithCancel(
+		component.MustNew(ctx, "prism", "postmaster"))
+
+	cfg := postmasterConfig{
+		defaultDeadline: DefaultPostmasterDeadline,
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	pm := &Postmaster{
+		couriers:    make(map[string]*Courier),
+		poolHasPeer: poolHasPeer,
+		poolEvents:  poolEvents,
+		poolSend:    poolSendFunc,
+		ctx:         ctx,
+		cancel:      cancel,
+		cfg:         cfg,
+	}
+
+	if handler != nil {
+		comp, ok := component.Get(ctx)
+		if ok {
+			pm.handler = handler
+			pm.logger = slog.New(handler).With(slog.Any("component", comp))
+		}
+	}
+
+	pm.wg.Add(1)
+	go pm.handlePoolEvents()
+
+	return pm
 }
 
-func (m *Postmaster) Send(
+func (pm *Postmaster) Send(
 	ctx context.Context,
 	peerID string,
 	data Envelope,
-	deadline time.Duration,
-	onOutcome func(LetterOutcome), // should be non-blocking
-) (LetterID, error) {
-	return 0, nil
+	onOutcome func(LetterOutcome),
+	opts ...SendOption,
+) (context.CancelFunc, error) {
+	cfg := sendConfig{deadline: pm.cfg.defaultDeadline}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	// check if peer courier exists
+	peerID, ok := pm.poolHasPeer(peerID)
+	if !ok {
+		return nil, fmt.Errorf("peer not found")
+	}
+	courier, ok := pm.couriers[peerID]
+	if !ok {
+		return nil, fmt.Errorf("peer not found")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, cfg.deadline)
+	letter := OutboundLetter{
+		id:     pm.counter.Add(1),
+		peerID: peerID,
+		data:   data,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	courier.Enqueue(letter, onOutcome)
+
+	return cancel, nil
 }
 
-func (m *Postmaster) Close() {}
+func (pm *Postmaster) Peers() []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	peers := make([]string, 0, len(pm.couriers))
+	for id, _ := range pm.couriers {
+		peers = append(peers, id)
+	}
+	return peers
+}
+
+func (pm *Postmaster) Close() {
+	pm.cancel()
+	pm.wg.Wait()
+
+	// close each courier
+	pm.mu.Lock()
+	couriers := pm.couriers
+	pm.couriers = make(map[string]*Courier)
+	pm.mu.Unlock()
+
+	for _, courier := range couriers {
+		courier.Close()
+	}
+}
+
+func (pm *Postmaster) handlePoolEvents() {
+	defer pm.wg.Done()
+
+	for {
+		select {
+		case <-pm.ctx.Done():
+			return
+		case ev := <-pm.poolEvents:
+			switch ev.Kind {
+			case EventAdded:
+				pm.mu.Lock()
+				_, exists := pm.couriers[ev.ID]
+				if exists {
+					pm.mu.Unlock()
+					continue
+				}
+				send := func(data Envelope) error { return pm.poolSend(ev.ID, data) }
+				courier := NewCourier(pm.ctx, send, pm.handler)
+				pm.couriers[ev.ID] = courier
+				pm.mu.Unlock()
+
+			case EventRemoved:
+				pm.mu.Lock()
+				courier, exists := pm.couriers[ev.ID]
+				if exists {
+					delete(pm.couriers, ev.ID)
+				}
+				pm.mu.Unlock()
+				courier.Close()
+
+			case EventConnected:
+				pm.mu.RLock()
+				courier, exists := pm.couriers[ev.ID]
+				if exists {
+					courier.HandleConnect()
+				}
+				pm.mu.RUnlock()
+
+			case EventDisconnected:
+				pm.mu.RLock()
+				courier, exists := pm.couriers[ev.ID]
+				if exists {
+					courier.HandleDisconnect()
+				}
+				pm.mu.RUnlock()
+			}
+		}
+	}
+}
 
 // ----------------------------------------------------------------------------
 // Courier
@@ -201,9 +360,18 @@ func (c *Courier) HandleDisconnect() {
 }
 
 func (c *Courier) Close() {
-	c.command(&cmdCloseCourier{})
 	c.cancel()
 	c.wg.Wait()
+	// cancel remaining letters
+	for {
+		t, ok := c.pop()
+		if !ok {
+			break
+		}
+		t.letter.cancel()
+		t.setMissedAt(time.Now())
+		c.doneOnce(t)
+	}
 }
 
 // Internal
@@ -211,7 +379,6 @@ func (c *Courier) Close() {
 func (c *Courier) command(cmd courierCommand) {
 	select {
 	case <-c.ctx.Done():
-		fmt.Println("here")
 	case c.cmd <- cmd:
 	}
 }
@@ -366,20 +533,5 @@ func (cmd cmdHandleSendResult) apply(c *Courier) {
 	} else {
 		cmd.traveller.setSentAt(cmd.at)
 		c.doneOnce(cmd.traveller)
-	}
-}
-
-type cmdCloseCourier struct{}
-
-func (cmd cmdCloseCourier) apply(c *Courier) {
-	// cancel remaining letters
-	for {
-		t, ok := c.pop()
-		if !ok {
-			break
-		}
-		t.letter.cancel()
-		t.setMissedAt(time.Now())
-		c.doneOnce(t)
 	}
 }
