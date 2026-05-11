@@ -80,7 +80,7 @@ type Postmaster struct {
 // Courier
 
 type Courier struct {
-	task     chan courierTask
+	tasks    chan courierTask
 	sendFunc func(data Envelope) error
 
 	// state
@@ -324,7 +324,7 @@ func NewCourier(
 		component.MustExtend(ctx, "courier"))
 
 	c := &Courier{
-		task:     make(chan courierTask, 64),
+		tasks:    make(chan courierTask, 64),
 		sendFunc: sendFunc,
 		ctx:      ctx,
 		cancel:   cancel,
@@ -370,7 +370,7 @@ func (c *Courier) Close() {
 func (c *Courier) order(task courierTask) {
 	select {
 	case <-c.ctx.Done():
-	case c.task <- task:
+	case c.tasks <- task:
 	}
 }
 
@@ -381,7 +381,7 @@ func (c *Courier) run() {
 		select {
 		case <-c.ctx.Done():
 			return
-		case task := <-c.task:
+		case task := <-c.tasks:
 			task.dispatch(c)
 			c.maybeSend()
 		}
