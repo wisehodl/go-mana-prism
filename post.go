@@ -3,7 +3,6 @@ package prism
 import (
 	"container/list"
 	"context"
-	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"log/slog"
 	"sync"
@@ -81,7 +80,7 @@ type Postmaster struct {
 // Courier
 
 type Courier struct {
-	cmd      chan courierCommand
+	task     chan courierTask
 	sendFunc func(data Envelope) error
 
 	// state
@@ -91,15 +90,14 @@ type Courier struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
-	mu     sync.Mutex
 	wg     sync.WaitGroup
 	logger *slog.Logger
 }
 
-// Commands
+// Messages
 
-type courierCommand interface {
-	apply(c *Courier)
+type courierTask interface {
+	dispatch(c *Courier)
 }
 
 // Options
@@ -178,9 +176,9 @@ func (pm *Postmaster) Send(
 	ctx context.Context,
 	peerID string,
 	data Envelope,
-	onOutcome func(LetterOutcome),
+	callback func(LetterOutcome),
 	opts ...SendOption,
-) (context.CancelFunc, error) {
+) context.CancelFunc {
 	cfg := sendConfig{deadline: pm.cfg.defaultDeadline}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -192,11 +190,13 @@ func (pm *Postmaster) Send(
 	// check if peer courier exists
 	peerID, ok := pm.poolHasPeer(peerID)
 	if !ok {
-		return nil, fmt.Errorf("peer not found")
+		go callback(LetterOutcome{PeerID: peerID, Kind: OutcomeRejected})
+		return func() {}
 	}
 	courier, ok := pm.couriers[peerID]
 	if !ok {
-		return nil, fmt.Errorf("peer not found")
+		go callback(LetterOutcome{PeerID: peerID, Kind: OutcomeRejected})
+		return func() {}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.deadline)
@@ -208,9 +208,9 @@ func (pm *Postmaster) Send(
 		cancel: cancel,
 	}
 
-	courier.Enqueue(letter, onOutcome)
+	courier.Enqueue(letter, callback)
 
-	return cancel, nil
+	return cancel
 }
 
 func (pm *Postmaster) Peers() []string {
@@ -293,9 +293,9 @@ func (pm *Postmaster) handlePoolEvents() {
 // Courier
 // ----------------------------------------------------------------------------
 
-// Traveller
+// Letter State
 
-type letterTraveller struct {
+type letterState struct {
 	letter    OutboundLetter
 	onOutcome func(LetterOutcome)
 
@@ -305,13 +305,13 @@ type letterTraveller struct {
 	once     sync.Once
 }
 
-func (t *letterTraveller) isCancelled() bool {
-	return t.letter.ctx.Err() != nil
+func (s *letterState) isCancelled() bool {
+	return s.letter.ctx.Err() != nil
 }
 
-func (t *letterTraveller) countRetry()              { t.retries++ }
-func (t *letterTraveller) setSentAt(at time.Time)   { t.sentAt = at }
-func (t *letterTraveller) setMissedAt(at time.Time) { t.missedAt = at }
+func (s *letterState) countRetry()              { s.retries++ }
+func (s *letterState) setSentAt(at time.Time)   { s.sentAt = at }
+func (s *letterState) setMissedAt(at time.Time) { s.missedAt = at }
 
 // Courier
 
@@ -324,7 +324,7 @@ func NewCourier(
 		component.MustExtend(ctx, "courier"))
 
 	c := &Courier{
-		cmd:      make(chan courierCommand, 64),
+		task:     make(chan courierTask, 64),
 		sendFunc: sendFunc,
 		ctx:      ctx,
 		cancel:   cancel,
@@ -344,42 +344,33 @@ func NewCourier(
 }
 
 func (c *Courier) Enqueue(letter OutboundLetter, onOutcome func(LetterOutcome)) {
-	traveller := &letterTraveller{
+	wrappedLetter := &letterState{
 		letter:    letter,
 		onOutcome: onOutcome,
 	}
-	c.command(cmdEnqueue{traveller: traveller})
+	c.order(taskEnqueue{letter: wrappedLetter})
 }
 
 func (c *Courier) HandleConnect() {
-	c.command(cmdHandleConnect{})
+	c.order(taskConnected{})
 }
 
 func (c *Courier) HandleDisconnect() {
-	c.command(cmdHandleDisconnect{})
+	c.order(taskDisconnected{})
 }
 
 func (c *Courier) Close() {
 	c.cancel()
 	c.wg.Wait()
-	// cancel remaining letters
-	for {
-		t, ok := c.pop()
-		if !ok {
-			break
-		}
-		t.letter.cancel()
-		t.setMissedAt(time.Now())
-		c.doneOnce(t)
-	}
+	c.terminate()
 }
 
 // Internal
 
-func (c *Courier) command(cmd courierCommand) {
+func (c *Courier) order(task courierTask) {
 	select {
 	case <-c.ctx.Done():
-	case c.cmd <- cmd:
+	case c.task <- task:
 	}
 }
 
@@ -390,8 +381,8 @@ func (c *Courier) run() {
 		select {
 		case <-c.ctx.Done():
 			return
-		case cmd := <-c.cmd:
-			cmd.apply(c)
+		case task := <-c.task:
+			task.dispatch(c)
 			c.maybeSend()
 		}
 	}
@@ -403,28 +394,28 @@ func (c *Courier) maybeSend() {
 		return
 	}
 
-	t, ok := c.pop()
+	s, ok := c.pop()
 	if !ok {
 		return
 	}
 	c.sending = true
 
 	c.wg.Add(1)
-	go c.sendOnce(t)
+	go c.sendOnce(s)
 
 }
 
-func (c *Courier) sendOnce(t *letterTraveller) {
+func (c *Courier) sendOnce(s *letterState) {
 	defer c.wg.Done()
-	err := c.sendFunc(t.letter.data)
-	c.command(cmdHandleSendResult{traveller: t, at: time.Now(), err: err})
+	err := c.sendFunc(s.letter.data)
+	c.order(taskHandleSendResult{letter: s, at: time.Now(), err: err})
 }
 
-func (c *Courier) doneOnce(t *letterTraveller) {
+func (c *Courier) doneOnce(s *letterState) {
 	var kind LetterOutcomeKind
-	if t.isCancelled() {
+	if s.isCancelled() {
 		// letter was cancelled
-		if t.letter.ctx.Err() == context.DeadlineExceeded {
+		if s.letter.ctx.Err() == context.DeadlineExceeded {
 			// letter expired
 			kind = OutcomeExpired
 		} else {
@@ -437,18 +428,31 @@ func (c *Courier) doneOnce(t *letterTraveller) {
 	}
 
 	outcome := LetterOutcome{
-		LetterID: t.letter.id,
-		PeerID:   t.letter.peerID,
+		LetterID: s.letter.id,
+		PeerID:   s.letter.peerID,
 		Kind:     kind,
-		SentAt:   t.sentAt,
-		MissedAt: t.missedAt,
-		Retries:  t.retries,
+		SentAt:   s.sentAt,
+		MissedAt: s.missedAt,
+		Retries:  s.retries,
 	}
 
-	t.once.Do(func() {
-		t.letter.cancel()
-		go t.onOutcome(outcome)
+	s.once.Do(func() {
+		s.letter.cancel()
+		go s.onOutcome(outcome)
 	})
+}
+
+func (c *Courier) terminate() {
+	// cancel remaining letters
+	for {
+		s, ok := c.pop()
+		if !ok {
+			break
+		}
+		s.letter.cancel()
+		s.setMissedAt(time.Now())
+		c.doneOnce(s)
+	}
 }
 
 // Helpers
@@ -467,71 +471,71 @@ func (c *Courier) drain() {
 			return
 		}
 
-		t := front.Value.(*letterTraveller)
-		if !t.isCancelled() {
+		s := front.Value.(*letterState)
+		if !s.isCancelled() {
 			return
 		}
 
-		t.setMissedAt(time.Now())
-		c.doneOnce(t)
+		s.setMissedAt(time.Now())
+		c.doneOnce(s)
 		c.queue.Remove(front)
 	}
 }
 
-func (c *Courier) pop() (*letterTraveller, bool) {
+func (c *Courier) pop() (*letterState, bool) {
 	for {
 		front := c.queue.Front()
 		if front == nil {
 			return nil, false
 		}
 
-		t := front.Value.(*letterTraveller)
+		s := front.Value.(*letterState)
 		c.queue.Remove(front)
 
-		if !t.isCancelled() {
-			return t, true
+		if !s.isCancelled() {
+			return s, true
 		}
 
-		t.setMissedAt(time.Now())
-		c.doneOnce(t)
+		s.setMissedAt(time.Now())
+		c.doneOnce(s)
 	}
 }
 
 // ----------------------------------------------------------------------------
-// Commands
+// Courier Messages
 // ----------------------------------------------------------------------------
 
-type cmdEnqueue struct{ traveller *letterTraveller }
+type taskEnqueue struct{ letter *letterState }
 
-func (cmd cmdEnqueue) apply(c *Courier) {
-	c.queue.PushBack(cmd.traveller)
+func (t taskEnqueue) dispatch(c *Courier) {
+	c.queue.PushBack(t.letter)
 }
 
-type cmdHandleConnect struct{}
+type taskConnected struct{}
 
-func (cmd cmdHandleConnect) apply(c *Courier) {
+func (t taskConnected) dispatch(c *Courier) {
 	c.connected = true
 }
 
-type cmdHandleDisconnect struct{}
+type taskDisconnected struct{}
 
-func (cmd cmdHandleDisconnect) apply(c *Courier) {
+func (t taskDisconnected) dispatch(c *Courier) {
 	c.connected = false
 }
 
-type cmdHandleSendResult struct {
-	traveller *letterTraveller
-	at        time.Time
-	err       error
+type taskHandleSendResult struct {
+	letter *letterState
+	at     time.Time
+	err    error
 }
 
-func (cmd cmdHandleSendResult) apply(c *Courier) {
+func (t taskHandleSendResult) dispatch(c *Courier) {
 	c.sending = false
-	if cmd.err != nil {
-		cmd.traveller.countRetry()
-		c.queue.PushFront(cmd.traveller)
+	if t.err != nil {
+		t.letter.countRetry()
+		c.queue.PushFront(t.letter)
 	} else {
-		cmd.traveller.setSentAt(cmd.at)
-		c.doneOnce(cmd.traveller)
+		t.letter.setSentAt(t.at)
+		c.doneOnce(t.letter)
 	}
 }
