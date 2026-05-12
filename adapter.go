@@ -107,7 +107,7 @@ type Hotel struct {
 func NewEmbassy(
 	ctx context.Context,
 	pool EmbassyPlugin,
-	jc *JournalCollector,
+	collector *JournalCollector,
 	handler slog.Handler,
 ) *Embassy {
 	ctx, cancel := context.WithCancel(
@@ -121,16 +121,14 @@ func NewEmbassy(
 		cancel:    cancel,
 	}
 
-	if jc != nil {
+	if collector != nil {
 		e.journals = make(chan JournalEntry, 16)
-		jc.Enroll(e.journals)
+		collector.Enroll(e.journals)
 	}
 
 	if handler != nil {
-		c, ok := component.Get(ctx)
-		if ok {
-			e.logger = slog.New(handler).With(slog.Any("component", c))
-		}
+		c := component.FromContext(ctx)
+		e.logger = slog.New(handler).With(slog.Any("component", c))
 	}
 
 	e.wg.Add(1)
@@ -156,7 +154,7 @@ func (e *Embassy) Dispatch(url string) error {
 
 	at := time.Now()
 	if e.journals != nil {
-		c, _ := component.Get(e.ctx)
+		c := component.FromContext(e.ctx)
 		select {
 		case <-e.ctx.Done():
 			return fmt.Errorf("closing")
@@ -192,7 +190,7 @@ func (e *Embassy) Dismiss(url string) error {
 
 	at := time.Now()
 	if e.journals != nil {
-		c, _ := component.Get(e.ctx)
+		c := component.FromContext(e.ctx)
 		select {
 		case <-e.ctx.Done():
 			return fmt.Errorf("closing")
@@ -332,14 +330,14 @@ func (e *Embassy) runEventRouter() {
 			if canJournal {
 				switch kind {
 				case EventConnected:
-					c, _ := component.Get(e.ctx)
+					c := component.FromContext(e.ctx)
 					select {
 					case <-e.ctx.Done():
 					case e.journals <- NewPeerConnectedJournal(
 						url, c, PeerConnectedData{At: ev.At}):
 					}
 				case EventDisconnected:
-					c, _ := component.Get(e.ctx)
+					c := component.FromContext(e.ctx)
 					select {
 					case <-e.ctx.Done():
 					case e.journals <- NewPeerDisconnectedJournal(

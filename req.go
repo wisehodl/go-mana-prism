@@ -3,9 +3,16 @@ package prism
 import (
 	"context"
 	"encoding/base32"
+	"fmt"
+	"git.wisehodl.dev/jay/go-mana-component"
+	"git.wisehodl.dev/jay/go-roots-ws"
 	"log/slog"
 	"sync"
 	"time"
+)
+
+var (
+	_ fmt.Formatter
 )
 
 // ----------------------------------------------------------------------------
@@ -17,13 +24,13 @@ import (
 type ReqEvent struct {
 	PeerID     string
 	ReceivedAt time.Time
-	Event      []byte
+	Data       []byte
 }
 
 type ReqMessage struct {
 	PeerID     string
 	ReceivedAt time.Time
-	Message    string
+	Data       string
 }
 
 // Options
@@ -84,13 +91,14 @@ type request struct {
 	messages chan ReqMessage
 
 	postmaster  *Postmaster
-	journals    chan<- JournalEntry
+	journals    chan JournalEntry
 	isConnected func(peerID string) bool
 	onClose     func()
 
-	sendCtx context.Context
-	wg      sync.WaitGroup
-	logger  *slog.Logger
+	ctx    context.Context
+	wg     sync.WaitGroup
+	peerWg sync.WaitGroup
+	logger *slog.Logger
 }
 
 // Stream Request
@@ -101,6 +109,7 @@ type StreamReq struct {
 }
 
 type streamPeer struct {
+	reqSent   bool
 	closeSent bool
 	closed    bool
 	closeOnce sync.Once
@@ -115,68 +124,12 @@ type QueryReq struct {
 }
 
 type queryPeer struct {
+	reqSent   bool
 	eoseTimer *time.Timer
 	closeSent bool
 	closed    bool
 	closeOnce sync.Once
 }
-
-// Request Tasks
-
-type reqTask interface{ reqTask() } // gates task channel
-
-type taskRecordReqOutcome struct {
-	peerID  string
-	outcome LetterOutcome
-}
-
-func (taskRecordReqOutcome) reqTask() {}
-
-type taskRecordCloseOutcome struct {
-	peerID  string
-	outcome LetterOutcome
-}
-
-func (taskRecordCloseOutcome) reqTask() {}
-
-type taskReceiveEvent struct {
-	peerID string
-	at     time.Time
-	data   Envelope
-}
-
-func (taskReceiveEvent) reqTask() {}
-
-type taskReceiveEOSE struct {
-	peerID string
-	at     time.Time
-}
-
-func (taskReceiveEOSE) reqTask() {}
-
-type taskReceiveClosed struct {
-	peerID  string
-	at      time.Time
-	message string
-}
-
-func (taskReceiveClosed) reqTask() {}
-
-type taskClosePeer struct{ peerID string }
-
-func (taskClosePeer) reqTask() {}
-
-type taskCloseReq struct{}
-
-func (taskCloseReq) reqTask() {}
-
-type taskHandleReconnect struct{ peerID string }
-
-func (taskHandleReconnect) reqTask() {}
-
-type taskHandleEOSETimeout struct{ peerID string }
-
-func (taskHandleEOSETimeout) reqTask() {}
 
 // ----------------------------------------------------------------------------
 // Request Options
@@ -260,7 +213,7 @@ func (m *ReqManager) CloseReq(id string) error {
 
 func (m *ReqManager) Close() {}
 
-func (m *ReqManager) makeOnClose(subID, peers []string) func() {
+func (m *ReqManager) makeOnClose(subID string, peers []string) func() {
 	return func() {}
 }
 
@@ -292,22 +245,49 @@ func generateID(prefix string) string {
 // Base Request
 // ----------------------------------------------------------------------------
 
+func (r *request) runReturnEvents() {
+	defer r.wg.Done()
+	defer close(r.events)
+	defer close(r.messages)
+	bufferedPipe(r.buffer, r.events)
+}
+
+func (r *request) dispatchEvent(task taskEvent) {
+	select {
+	case <-r.done:
+	case r.buffer <- ReqEvent{
+		PeerID: task.peerID, ReceivedAt: task.at, Data: task.data}:
+	}
+}
+
 func (r *request) emit(entry JournalEntry) {
-	// send into journal entry channel
-	// selects on r.done and r.journals
+	select {
+	case <-r.done:
+	case r.journals <- entry:
+	}
 }
 
 func (r *request) order(task reqTask) {
-	// send into task queue
-	// selects on r.done and r.tasks
+	select {
+	case <-r.done:
+	case r.tasks <- task:
+	}
 }
 
-func (r *request) send(
-	peerID string,
-	data Envelope,
-	makeOutcomeTask func(peerID string, outcome LetterOutcome) reqTask,
-) error {
-	return nil
+func (r *request) Close() {
+	r.order(newCloseReq())
+	r.wg.Wait()
+}
+
+func (r *request) terminate() {
+	defer r.wg.Done()
+	r.peerWg.Wait()
+	close(r.done)
+	close(r.buffer)
+	if r.journals != nil {
+		close(r.journals)
+	}
+	r.onClose()
 }
 
 // ----------------------------------------------------------------------------
@@ -321,48 +301,252 @@ func NewStreamReq(
 	peers []string,
 	postmaster *Postmaster,
 	isConnected func(string) bool,
-	journals chan<- JournalEntry,
+	collector *JournalCollector,
 	onClose func(),
 	handler slog.Handler,
 ) *StreamReq {
-	// start buffered pipe to event output
-	// pipe return drives channel closures
-	return nil
-}
+	ctx = component.MustExtend(ctx, "stream")
 
-func (r *StreamReq) Peers() []string {
-	return nil
-}
+	r := &StreamReq{
+		request: &request{
+			id:  id,
+			req: envelope.EncloseReq(id, filters),
 
-func (r *StreamReq) Close() {}
+			tasks: make(chan reqTask, len(peers)*16),
+			done:  make(chan struct{}),
 
-func (r *StreamReq) sendReq(peerID string) error {
-	return nil
-}
+			buffer:   make(chan ReqEvent, len(peers)*16),
+			events:   make(chan ReqEvent),
+			messages: make(chan ReqMessage, len(peers)),
 
-func (r *StreamReq) sendClose(peerID string) error {
-	return nil
+			postmaster:  postmaster,
+			isConnected: isConnected,
+			onClose:     onClose,
+
+			ctx: ctx,
+		},
+		peers: make(map[string]*streamPeer),
+	}
+
+	if collector != nil {
+		r.journals = make(chan JournalEntry, len(peers)*16)
+		collector.Enroll(r.journals)
+	}
+
+	if handler != nil {
+		c := component.FromContext(ctx)
+		r.logger = slog.New(handler).With(slog.Any("component", c))
+	}
+
+	for _, peerID := range peers {
+		r.peers[peerID] = &streamPeer{}
+		r.peerWg.Add(1)
+	}
+
+	r.wg.Add(2)
+	go r.run()
+	go r.runReturnEvents()
+
+	// send initial REQs
+	for id := range r.peers {
+		if r.isConnected(id) {
+			r.sendReq(id)
+		}
+	}
+
+	return r
 }
 
 func (r *StreamReq) run() {
-	// switches on task type
+	defer r.wg.Done()
+
+	for {
+		select {
+		case <-r.done:
+			return
+		case t := <-r.tasks:
+			r.dispatch(t)
+		}
+	}
 }
 
-func (r *StreamReq) applyRecordReqOutcome(task taskRecordReqOutcome) {}
+func (r *StreamReq) Peers() []string {
+	peers := make([]string, 0, len(r.peers))
+	for p := range r.peers {
+		peers = append(peers, p)
+	}
+	return peers
+}
 
-func (r *StreamReq) applyRecordCloseOutcome(task taskRecordCloseOutcome) {}
+func (r *StreamReq) sendReq(peerID string) {
+	_, ok := r.peers[peerID]
+	if !ok {
+		return
+	}
 
-func (r *StreamReq) applyReceiveEvent(task taskReceiveEvent) {}
+	id, _ := r.postmaster.Send(r.ctx, peerID, r.req,
+		func(o LetterOutcome) { r.order(newReqOutcomeTask(peerID, o)) })
 
-func (r *StreamReq) applyReceiveEOSE(task taskReceiveEOSE) {}
+	c := component.FromContext(r.ctx)
+	r.emit(NewReqQueuedJournal(peerID, c, ReqQueuedData{
+		SubID: r.id, LetterID: id, QueuedAt: time.Now(),
+	}))
+}
 
-func (r *StreamReq) applyReceiveClosed(task taskReceiveClosed) {}
+func (r *StreamReq) sendClose(peerID string) {
+	peer, ok := r.peers[peerID]
+	if !ok || peer.closeSent {
+		return
+	}
 
-func (r *StreamReq) applyClosePeer(task taskClosePeer) {}
+	if !peer.reqSent {
+		r.closePeer(peerID)
+		return
+	}
 
-func (r *StreamReq) applyCloseReq(task taskCloseReq) {}
+	id, _ := r.postmaster.Send(r.ctx, peerID, envelope.EncloseClose(r.id),
+		func(o LetterOutcome) { r.order(newCloseOutcomeTask(peerID, o)) })
 
-func (r *StreamReq) applyHandleReconnect(task taskHandleReconnect) {}
+	peer.closeSent = true
+	c := component.FromContext(r.ctx)
+	r.emit(NewCloseQueuedJournal(peerID, c, CloseQueuedData{
+		SubID: r.id, LetterID: id, QueuedAt: time.Now(),
+	}))
+}
+
+func (r *StreamReq) closePeer(peerID string) {
+	peer, ok := r.peers[peerID]
+	if !ok {
+		return
+	}
+
+	peer.closeOnce.Do(func() {
+		r.peerWg.Done()
+		peer.closed = true
+	})
+}
+
+func (r *StreamReq) dispatch(task reqTask) {
+	switch t := task.(type) {
+	case taskReqOutcome:
+		r.dispatchReqOutcome(t)
+
+	case taskCloseOutcome:
+		r.dispatchCloseOutcome(t)
+
+	case taskEvent:
+		r.dispatchEvent(t)
+
+	case taskEOSE:
+		r.dispatchEOSE(t)
+
+	case taskClosed:
+		r.dispatchClosed(t)
+
+	case taskClosePeer:
+		r.dispatchClosePeer(t)
+
+	case taskCloseReq:
+		r.dispatchCloseReq(t)
+
+	case taskHandleReconnect:
+		r.dispatchHandleReconnect(t)
+	}
+}
+
+func (r *StreamReq) dispatchReqOutcome(task taskReqOutcome) {
+	peer := r.peers[task.peerID]
+	if task.outcome.Kind == OutcomeSent {
+		peer.reqSent = true
+	}
+
+	c := component.FromContext(r.ctx)
+	r.emit(NewReqSendOutcomeJournal(task.peerID, c, ReqSendOutcomeData{
+		SubID:      r.id,
+		LetterID:   task.outcome.LetterID,
+		Outcome:    task.outcome.Kind,
+		SentAt:     task.outcome.SentAt,
+		MissedAt:   task.outcome.MissedAt,
+		RetryCount: task.outcome.Retries,
+	}))
+}
+
+func (r *StreamReq) dispatchCloseOutcome(task taskCloseOutcome) {
+	r.closePeer(task.peerID)
+
+	c := component.FromContext(r.ctx)
+	r.emit(NewCloseSendOutcomeJournal(task.peerID, c, CloseSendOutcomeData{
+		SubID:      r.id,
+		LetterID:   task.outcome.LetterID,
+		Outcome:    task.outcome.Kind,
+		SentAt:     task.outcome.SentAt,
+		MissedAt:   task.outcome.MissedAt,
+		RetryCount: task.outcome.Retries,
+	}))
+}
+
+func (r *StreamReq) dispatchEOSE(task taskEOSE) {
+	c := component.FromContext(r.ctx)
+	r.emit(NewReceivedEOSEJournal(task.peerID, c, ReceivedEOSEData{
+		SubID: r.id, At: task.at,
+	}))
+}
+
+func (r *StreamReq) dispatchClosed(task taskClosed) {
+	c := component.FromContext(r.ctx)
+	r.emit(NewReceivedClosedJournal(task.peerID, c, ReceivedClosedData{
+		SubID: r.id, At: task.at, Message: task.message,
+	}))
+
+	peer := r.peers[task.peerID]
+	if peer.closed {
+		return
+	}
+
+	select {
+	case <-r.done:
+	case r.messages <- ReqMessage{
+		PeerID:     task.peerID,
+		ReceivedAt: task.at,
+		Data:       task.message,
+	}:
+	}
+
+	r.closePeer(task.peerID)
+}
+
+func (r *StreamReq) dispatchClosePeer(task taskClosePeer) {
+	r.closePeer(task.peerID)
+}
+
+func (r *StreamReq) dispatchCloseReq(task taskCloseReq) {
+	if r.closing {
+		return
+	}
+
+	r.closing = true
+
+	for id, peer := range r.peers {
+		if !peer.closed {
+			if !r.isConnected(id) {
+				r.closePeer(id)
+			} else {
+				r.sendClose(id)
+			}
+		}
+	}
+
+	r.wg.Add(1)
+	go r.terminate()
+}
+
+func (r *StreamReq) dispatchHandleReconnect(task taskHandleReconnect) {
+	peer, ok := r.peers[task.peerID]
+	if !ok || peer.closed || r.closing || peer.closeSent {
+		return
+	}
+	r.sendReq(task.peerID)
+}
 
 // ----------------------------------------------------------------------------
 // Query Request
@@ -386,10 +570,12 @@ func NewQueryReq(
 }
 
 func (r *QueryReq) Peers() []string {
-	return nil
+	peers := make([]string, 0, len(r.peers))
+	for p := range r.peers {
+		peers = append(peers, p)
+	}
+	return peers
 }
-
-func (r *QueryReq) Close() {}
 
 func (r *QueryReq) sendReq(peerID string) error {
 	return nil
@@ -400,50 +586,144 @@ func (r *QueryReq) sendClose(peerID string) error {
 }
 
 func (r *QueryReq) run() {
-	// switches on task type
+	defer r.wg.Done()
+
+	for {
+		select {
+		case <-r.done:
+			return
+		case t := <-r.tasks:
+			r.dispatch(t)
+		}
+	}
 }
 
-func (r *QueryReq) applyRecordReqOutcome(task taskRecordReqOutcome) {}
+func (r *QueryReq) dispatch(task reqTask) {
+	switch t := task.(type) {
+	case taskReqOutcome:
+		r.dispatchReqOutcome(t)
 
-func (r *QueryReq) applyRecordCloseOutcome(task taskRecordCloseOutcome) {}
+	case taskCloseOutcome:
+		r.dispatchCloseOutcome(t)
 
-func (r *QueryReq) applyReceiveEvent(task taskReceiveEvent) {}
+	case taskEvent:
+		r.dispatchEvent(t)
 
-func (r *QueryReq) applyReceiveEOSE(task taskReceiveEOSE) {}
+	case taskEOSE:
+		r.dispatchEOSE(t)
 
-func (r *QueryReq) applyReceiveClosed(task taskReceiveClosed) {}
+	case taskClosed:
+		r.dispatchClosed(t)
 
-func (r *QueryReq) applyClosePeer(task taskClosePeer) {}
+	case taskClosePeer:
+		r.dispatchClosePeer(t)
 
-func (r *QueryReq) applyCloseReq(task taskCloseReq) {}
+	case taskCloseReq:
+		r.dispatchCloseReq(t)
 
-func (r *QueryReq) applyHandleEOSETimeout(task taskHandleEOSETimeout) {}
+	case taskMissedEOSE:
+		r.dispatchMissedEOSE(t)
+	}
+}
+
+func (r *QueryReq) dispatchReqOutcome(task taskReqOutcome) {}
+
+func (r *QueryReq) dispatchCloseOutcome(task taskCloseOutcome) {}
+
+func (r *QueryReq) dispatchEOSE(task taskEOSE) {}
+
+func (r *QueryReq) dispatchClosed(task taskClosed) {}
+
+func (r *QueryReq) dispatchClosePeer(task taskClosePeer) {}
+
+func (r *QueryReq) dispatchCloseReq(task taskCloseReq) {}
+
+func (r *QueryReq) dispatchMissedEOSE(task taskMissedEOSE) {}
 
 // ----------------------------------------------------------------------------
 // Request Tasks
 // ----------------------------------------------------------------------------
 
-func newRecordReqOutcome(peerID string, outcome LetterOutcome) taskRecordReqOutcome {
-	return taskRecordReqOutcome{peerID: peerID, outcome: outcome}
+// Types
+
+type reqTask interface{ reqTask() } // gates task channel
+
+type taskReqOutcome struct {
+	peerID  string
+	outcome LetterOutcome
 }
 
-func newRecordCloseOutcome(peerID string, outcome LetterOutcome) taskRecordCloseOutcome {
-	return taskRecordCloseOutcome{peerID: peerID, outcome: outcome}
+func (taskReqOutcome) reqTask() {}
+
+type taskCloseOutcome struct {
+	peerID  string
+	outcome LetterOutcome
 }
 
-func newReceiveEvent(peerID string, at time.Time, data Envelope) taskReceiveEvent {
-	return taskReceiveEvent{peerID: peerID, at: at, data: data}
+func (taskCloseOutcome) reqTask() {}
+
+type taskEvent struct {
+	peerID string
+	at     time.Time
+	data   Envelope
 }
 
-func newReceiveEOSE(peerID string, at time.Time) taskReceiveEOSE {
-	return taskReceiveEOSE{peerID: peerID, at: at}
+func (taskEvent) reqTask() {}
+
+type taskEOSE struct {
+	peerID string
+	at     time.Time
 }
 
-func newReceiveClosed(peerID string, at time.Time, message string) taskReceiveClosed {
-	return taskReceiveClosed{peerID: peerID, at: at, message: message}
+func (taskEOSE) reqTask() {}
+
+type taskClosed struct {
+	peerID  string
+	at      time.Time
+	message string
 }
 
-func newClosePeer(peerID string) taskClosePeer {
+func (taskClosed) reqTask() {}
+
+type taskClosePeer struct{ peerID string }
+
+func (taskClosePeer) reqTask() {}
+
+type taskCloseReq struct{}
+
+func (taskCloseReq) reqTask() {}
+
+type taskHandleReconnect struct{ peerID string }
+
+func (taskHandleReconnect) reqTask() {}
+
+type taskMissedEOSE struct{ peerID string }
+
+func (taskMissedEOSE) reqTask() {}
+
+// Constructors
+
+func newReqOutcomeTask(peerID string, outcome LetterOutcome) taskReqOutcome {
+	return taskReqOutcome{peerID: peerID, outcome: outcome}
+}
+
+func newCloseOutcomeTask(peerID string, outcome LetterOutcome) taskCloseOutcome {
+	return taskCloseOutcome{peerID: peerID, outcome: outcome}
+}
+
+func newEventTask(peerID string, at time.Time, data Envelope) taskEvent {
+	return taskEvent{peerID: peerID, at: at, data: data}
+}
+
+func newEOSETask(peerID string, at time.Time) taskEOSE {
+	return taskEOSE{peerID: peerID, at: at}
+}
+
+func newClosedTask(peerID string, at time.Time, message string) taskClosed {
+	return taskClosed{peerID: peerID, at: at, message: message}
+}
+
+func newClosePeerTask(peerID string) taskClosePeer {
 	return taskClosePeer{peerID: peerID}
 }
 
@@ -455,6 +735,6 @@ func newHandleReconnect(peerID string) taskHandleReconnect {
 	return taskHandleReconnect{peerID: peerID}
 }
 
-func newHandleEOSETimeout(peerID string) taskHandleEOSETimeout {
-	return taskHandleEOSETimeout{peerID: peerID}
+func newMissedEOSETask(peerID string) taskMissedEOSE {
+	return taskMissedEOSE{peerID: peerID}
 }

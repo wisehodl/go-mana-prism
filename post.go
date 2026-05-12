@@ -159,11 +159,9 @@ func NewPostmaster(
 	}
 
 	if handler != nil {
-		comp, ok := component.Get(ctx)
-		if ok {
-			pm.handler = handler
-			pm.logger = slog.New(handler).With(slog.Any("component", comp))
-		}
+		comp := component.FromContext(ctx)
+		pm.handler = handler
+		pm.logger = slog.New(handler).With(slog.Any("component", comp))
 	}
 
 	pm.wg.Add(1)
@@ -178,7 +176,7 @@ func (pm *Postmaster) Send(
 	data Envelope,
 	callback func(LetterOutcome),
 	opts ...SendOption,
-) context.CancelFunc {
+) (uint64, context.CancelFunc) {
 	cfg := sendConfig{deadline: pm.cfg.defaultDeadline}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -191,12 +189,12 @@ func (pm *Postmaster) Send(
 	peerID, ok := pm.poolHasPeer(peerID)
 	if !ok {
 		go callback(LetterOutcome{PeerID: peerID, Kind: OutcomeRejected})
-		return func() {}
+		return 0, func() {}
 	}
 	courier, ok := pm.couriers[peerID]
 	if !ok {
 		go callback(LetterOutcome{PeerID: peerID, Kind: OutcomeRejected})
-		return func() {}
+		return 0, func() {}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.deadline)
@@ -210,7 +208,7 @@ func (pm *Postmaster) Send(
 
 	courier.Enqueue(letter, callback)
 
-	return cancel
+	return letter.id, cancel
 }
 
 func (pm *Postmaster) Peers() []string {
@@ -331,10 +329,8 @@ func NewCourier(
 	}
 
 	if handler != nil {
-		comp, ok := component.Get(ctx)
-		if ok {
-			c.logger = slog.New(handler).With(slog.Any("component", comp))
-		}
+		comp := component.FromContext(ctx)
+		c.logger = slog.New(handler).With(slog.Any("component", comp))
 	}
 
 	c.wg.Add(1)

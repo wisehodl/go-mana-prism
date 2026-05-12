@@ -22,7 +22,7 @@ func TestJournalCollector_SingleProducer(t *testing.T) {
 	jc.Enroll(ch)
 
 	ctx := component.MustNew(context.Background(), "test", "emitter")
-	comp, _ := component.Get(ctx)
+	comp := component.FromContext(ctx)
 	e1 := newTestEntry("peer1", comp)
 	e2 := newTestEntry("peer2", comp)
 
@@ -52,7 +52,7 @@ func TestJournalCollector_MultipleProducers(t *testing.T) {
 	jc.Enroll(ch2)
 
 	ctx := component.MustNew(context.Background(), "test", "emitter")
-	comp, _ := component.Get(ctx)
+	comp := component.FromContext(ctx)
 
 	ch1 <- newTestEntry("p1", comp)
 	ch2 <- newTestEntry("p2", comp)
@@ -138,7 +138,7 @@ func TestJournalCollector_ComponentIdentity(t *testing.T) {
 	mod := "test-mod"
 	path := "a.b.c"
 	ctx := component.MustNew(context.Background(), mod, path)
-	comp, _ := component.Get(ctx)
+	comp := component.FromContext(ctx)
 
 	entry := newTestEntry("peer-id", comp)
 	ch <- entry

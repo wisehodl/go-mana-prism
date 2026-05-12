@@ -182,7 +182,6 @@ type ReqQueuedData struct {
 	SubID    string
 	LetterID uint64
 	QueuedAt time.Time
-	Err      error
 }
 
 func NewReqQueuedJournal(
@@ -202,7 +201,6 @@ type CloseQueuedData struct {
 	SubID    string
 	LetterID uint64
 	QueuedAt time.Time
-	Err      error
 }
 
 func NewCloseQueuedJournal(
@@ -225,7 +223,6 @@ type ReqSendOutcomeData struct {
 	SentAt     time.Time
 	MissedAt   time.Time
 	RetryCount int
-	Err        error
 }
 
 func NewReqSendOutcomeJournal(
@@ -248,7 +245,6 @@ type CloseSendOutcomeData struct {
 	SentAt     time.Time
 	MissedAt   time.Time
 	RetryCount int
-	Err        error
 }
 
 func NewCloseSendOutcomeJournal(

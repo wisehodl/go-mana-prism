@@ -86,10 +86,8 @@ func NewClerk(
 	}
 
 	if handler != nil {
-		comp, ok := component.Get(ctx)
-		if ok {
-			c.logger = slog.New(handler).With(slog.Any("component", comp))
-		}
+		comp := component.FromContext(ctx)
+		c.logger = slog.New(handler).With(slog.Any("component", comp))
 	}
 
 	return c
