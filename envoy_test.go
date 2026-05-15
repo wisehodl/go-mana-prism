@@ -2,7 +2,6 @@ package prism
 
 import (
 	"context"
-	"git.wisehodl.dev/jay/go-honeybee"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
@@ -51,12 +50,12 @@ func TestEnvoy_IsConnected(t *testing.T) {
 	ctx := component.MustNew(context.Background(), "prism", "test")
 	mu := sync.RWMutex{}
 	url := "wss://test"
-	events := make(chan honeybee.OutboundPoolEvent)
+	events := make(chan OutboundPoolEvent)
 
 	envoy := newEnvoy(ctx, url, nil, nil, events, nil, nil)
 	eventSub := envoy.SubscribeEvents()
 
-	gotEvents := []honeybee.OutboundPoolEvent{}
+	gotEvents := []OutboundPoolEvent{}
 	go func() {
 		for ev := range eventSub {
 			mu.Lock()
@@ -65,8 +64,8 @@ func TestEnvoy_IsConnected(t *testing.T) {
 		}
 	}()
 
-	events <- honeybee.OutboundPoolEvent{
-		ID: url, Kind: honeybee.OutboundEventConnected, At: time.Now()}
+	events <- OutboundPoolEvent{
+		ID: url, Kind: EventConnected, At: time.Now()}
 
 	Eventually(t, func() bool {
 		return envoy.IsConnected()
@@ -77,12 +76,12 @@ func TestEnvoy_Events(t *testing.T) {
 	ctx := component.MustNew(context.Background(), "prism", "test")
 	mu := sync.RWMutex{}
 	url := "wss://test"
-	events := make(chan honeybee.OutboundPoolEvent)
+	events := make(chan OutboundPoolEvent)
 
 	envoy := newEnvoy(ctx, url, nil, nil, events, nil, nil)
 	eventSub := envoy.SubscribeEvents()
 
-	gotEvents := []honeybee.OutboundPoolEvent{}
+	gotEvents := []OutboundPoolEvent{}
 	go func() {
 		for ev := range eventSub {
 			mu.Lock()
@@ -91,8 +90,8 @@ func TestEnvoy_Events(t *testing.T) {
 		}
 	}()
 
-	events <- honeybee.OutboundPoolEvent{
-		ID: url, Kind: honeybee.OutboundEventConnected, At: time.Now()}
+	events <- OutboundPoolEvent{
+		ID: url, Kind: EventConnected, At: time.Now()}
 
 	Eventually(t, func() bool {
 		mu.RLock()
@@ -101,7 +100,7 @@ func TestEnvoy_Events(t *testing.T) {
 	}, "should have gotten event")
 
 	mu.RLock()
-	assert.Equal(t, honeybee.OutboundEventConnected, gotEvents[0].Kind)
+	assert.Equal(t, EventConnected, gotEvents[0].Kind)
 	mu.RUnlock()
 }
 
@@ -109,12 +108,12 @@ func TestEnvoy_Inbox(t *testing.T) {
 	ctx := component.MustNew(context.Background(), "prism", "test")
 	mu := sync.RWMutex{}
 	url := "wss://test"
-	inbox := make(chan honeybee.InboxMessage)
+	inbox := make(chan InboxMessage)
 
 	envoy := newEnvoy(ctx, url, nil, nil, nil, inbox, nil)
 	inboxSub := envoy.SubscribeInbox([]string{"EVENT"})
 
-	gotInbox := []honeybee.InboxMessage{}
+	gotInbox := []InboxMessage{}
 	go func() {
 		for ev := range inboxSub {
 			mu.Lock()
@@ -123,12 +122,12 @@ func TestEnvoy_Inbox(t *testing.T) {
 		}
 	}()
 
-	inbox <- honeybee.InboxMessage{
+	inbox <- InboxMessage{
 		ID:         url,
 		Data:       envelope.EncloseEvent([]byte("{}")),
 		ReceivedAt: time.Now(),
 	}
-	inbox <- honeybee.InboxMessage{
+	inbox <- InboxMessage{
 		ID:         url,
 		Data:       envelope.EncloseOK("id", true, "ok"),
 		ReceivedAt: time.Now(),
