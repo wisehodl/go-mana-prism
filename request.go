@@ -31,7 +31,7 @@ type ReqClosed struct {
 type RequestManager struct {
 	reqs      map[string]*request
 	sessions  map[string]*session
-	inboxSubs map[string]*sessionSub
+	inboxSubs map[string]chan<- sessionMessage
 	done      chan struct{}
 	sessionWg sync.WaitGroup
 
@@ -61,24 +61,27 @@ type session struct {
 	id  string
 	req []byte
 
-	eose   <-chan struct{}
-	closed <-chan struct{}
+	inbox         <-chan sessionMessage
+	forwardEvent  chan<- ReqEvent
+	forwardClosed chan<- ReqClosed
+	closedOnce    *sync.Once
 
-	done        chan struct{}
-	send        func([]byte) error
-	terminate   func(terminateReason)
-	closeOnEOSE bool
+	done         chan struct{}
+	send         func([]byte) error
+	preterminate func()
+	terminate    func(terminateReason)
+	closeOnEOSE  bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	logger *slog.Logger
 }
 
-type sessionSub struct {
-	eose       chan<- struct{}
-	closed     chan<- struct{}
-	eoseOnce   sync.Once
-	closedOnce sync.Once
+type sessionMessage struct {
+	label      string
+	peerID     string
+	receivedAt time.Time
+	data       []byte
 }
 
 type terminateReason int
@@ -117,7 +120,7 @@ func NewRequestManager(e *Envoy) *RequestManager {
 	m := &RequestManager{
 		reqs:      make(map[string]*request),
 		sessions:  make(map[string]*session),
-		inboxSubs: make(map[string]*sessionSub),
+		inboxSubs: make(map[string]chan<- sessionMessage),
 
 		envoy:  e,
 		events: e.SubscribeEvents(),
@@ -179,24 +182,18 @@ func (m *RequestManager) Query(
 	}
 
 	id := generateID()
-	buffer := make(chan ReqEvent, 64)
 	eventsCh := make(chan ReqEvent)
 	closedCh := make(chan ReqClosed, 1)
 
 	req := &request{
 		id:      id,
 		filters: filters,
-		buffer:  buffer,
-		events:  eventsCh,
+		buffer:  eventsCh,
 		closed:  closedCh,
 	}
 
 	m.mu.Lock()
 	m.reqs[id] = req
-	go func() {
-		bufferedPipe(buffer, eventsCh)
-		close(eventsCh)
-	}()
 
 	m.spawnSession(req, true)
 	m.mu.Unlock()
@@ -274,19 +271,20 @@ func (m *RequestManager) Close() {
 }
 
 func (m *RequestManager) spawnSession(req *request, query bool) {
-	eose := make(chan struct{})
-	closed := make(chan struct{})
-
-	sub := &sessionSub{eose: eose, closed: closed}
-	m.inboxSubs[req.id] = sub
+	sessionInbox := make(chan sessionMessage, 64)
+	m.inboxSubs[req.id] = sessionInbox
 
 	var once sync.Once
+	preterminate := func() {
+		m.mu.Lock()
+		delete(m.inboxSubs, req.id)
+		m.mu.Unlock()
+		sessionInbox <- sessionMessage{label: "EOF"}
+	}
+
 	terminate := func(r terminateReason) {
 		once.Do(func() {
 			m.mu.Lock()
-			close(eose)
-			close(closed)
-			delete(m.inboxSubs, req.id)
 			delete(m.sessions, req.id)
 			m.mu.Unlock()
 			m.sessionWg.Done()
@@ -304,10 +302,8 @@ func (m *RequestManager) spawnSession(req *request, query bool) {
 
 	req_env := envelope.EncloseReq(req.id, req.filters)
 	sess := newSession(
-		m.ctx, req.id, req_env,
-		eose, closed, m.done,
-		m.envoy.Send, terminate,
-		query, m.handler,
+		m.ctx, req.id, req_env, sessionInbox, req.buffer, req.closed, &req.closedOnce,
+		m.done, m.envoy.Send, preterminate, terminate, query, m.handler,
 	)
 	m.sessions[req.id] = sess
 	m.sessionWg.Add(1)
@@ -357,14 +353,16 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 			return
 		}
 		m.mu.RLock()
-		req, ok := m.reqs[subID]
+		sub, ok := m.inboxSubs[subID]
 		m.mu.RUnlock()
 		if !ok {
 			return
 		}
-		select {
-		case req.buffer <- ReqEvent{
-			PeerID: msg.ID, ReceivedAt: msg.ReceivedAt, Data: event}:
+		sub <- sessionMessage{
+			label:      "EVENT",
+			peerID:     msg.ID,
+			receivedAt: msg.ReceivedAt,
+			data:       event,
 		}
 	case "EOSE":
 		subID, err := envelope.FindEOSE(msg.Data)
@@ -377,31 +375,27 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 		if !ok {
 			return
 		}
-		sub.eoseOnce.Do(func() {
-			select {
-			case sub.eose <- struct{}{}:
-			default:
-			}
-		})
+		sub <- sessionMessage{
+			label:      "EOSE",
+			peerID:     msg.ID,
+			receivedAt: msg.ReceivedAt,
+		}
 	case "CLOSED":
 		subID, message, err := envelope.FindClosed(msg.Data)
 		if err != nil {
 			return
 		}
 		m.mu.RLock()
-		req, reqOk := m.reqs[subID]
-		sub, subOk := m.inboxSubs[subID]
+		sub, ok := m.inboxSubs[subID]
 		m.mu.RUnlock()
-		if reqOk {
-			req.closedOnce.Do(func() {
-				req.closed <- ReqClosed{
-					PeerID: msg.ID, ReceivedAt: msg.ReceivedAt, Data: message}
-			})
+		if !ok {
+			return
 		}
-		if subOk {
-			sub.closedOnce.Do(func() {
-				sub.closed <- struct{}{}
-			})
+		sub <- sessionMessage{
+			label:      "CLOSED",
+			peerID:     msg.ID,
+			receivedAt: msg.ReceivedAt,
+			data:       []byte(message),
 		}
 	}
 }
@@ -414,26 +408,32 @@ func newSession(
 	ctx context.Context,
 	id string,
 	req []byte,
-	eose <-chan struct{},
-	closed <-chan struct{},
+	inbox <-chan sessionMessage,
+	forwardEvent chan<- ReqEvent,
+	forwardClosed chan<- ReqClosed,
+	closedOnce *sync.Once,
 	done chan struct{},
 	send func(data []byte) error,
+	preterminate func(),
 	terminate func(terminateReason),
 	isQuery bool,
 	handler slog.Handler,
 ) *session {
 	ctx, cancel := context.WithCancel(component.MustExtend(ctx, "session"))
 	s := &session{
-		id:          id,
-		req:         req,
-		eose:        eose,
-		closed:      closed,
-		done:        done,
-		send:        send,
-		terminate:   terminate,
-		closeOnEOSE: isQuery,
-		ctx:         ctx,
-		cancel:      cancel,
+		id:            id,
+		req:           req,
+		inbox:         inbox,
+		forwardEvent:  forwardEvent,
+		forwardClosed: forwardClosed,
+		closedOnce:    closedOnce,
+		done:          done,
+		send:          send,
+		preterminate:  preterminate,
+		terminate:     terminate,
+		closeOnEOSE:   isQuery,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 	// create logger if handler is supplied
 	return s
@@ -444,29 +444,76 @@ func (s *session) run() {
 	sent := make(chan error, 1)
 	go func() { sent <- s.send(s.req) }()
 
+	drain := func() {
+		for msg := range s.inbox {
+			if msg.label == "EOF" {
+				return
+			}
+			switch msg.label {
+			case "EVENT":
+				s.forwardEvent <- ReqEvent{
+					PeerID:     msg.peerID,
+					ReceivedAt: msg.receivedAt,
+					Data:       msg.data,
+				}
+			case "EOSE":
+			case "CLOSED":
+				s.closedOnce.Do(func() {
+					s.forwardClosed <- ReqClosed{
+						PeerID:     msg.peerID,
+						ReceivedAt: msg.receivedAt,
+						Data:       string(msg.data),
+					}
+				})
+			}
+		}
+	}
+
+	exit := func(tr terminateReason) {
+		s.preterminate()
+		drain()
+		s.terminate(tr)
+	}
+
 	for {
 		select {
 		case err := <-sent:
 			if err != nil {
-				s.terminate(termSendFailed)
+				exit(termSendFailed)
 				return
 			}
 		case <-s.done:
-			s.terminate(termDone)
+			exit(termDone)
 			return
 		case <-s.ctx.Done():
 			s.send(envelope.EncloseClose(s.id))
-			s.terminate(termCancelled)
+			exit(termCancelled)
 			return
-		case <-s.eose:
-			if s.closeOnEOSE {
-				s.send(envelope.EncloseClose(s.id))
-				s.terminate(termClosedOnEOSE)
+		case msg := <-s.inbox:
+			switch msg.label {
+			case "EVENT":
+				s.forwardEvent <- ReqEvent{
+					PeerID:     msg.peerID,
+					ReceivedAt: msg.receivedAt,
+					Data:       msg.data,
+				}
+			case "EOSE":
+				if s.closeOnEOSE {
+					s.send(envelope.EncloseClose(s.id))
+					exit(termClosedOnEOSE)
+					return
+				}
+			case "CLOSED":
+				s.closedOnce.Do(func() {
+					s.forwardClosed <- ReqClosed{
+						PeerID:     msg.peerID,
+						ReceivedAt: msg.receivedAt,
+						Data:       string(msg.data),
+					}
+				})
+				exit(termReceivedClosed)
 				return
 			}
-		case <-s.closed:
-			s.terminate(termReceivedClosed)
-			return
 		}
 	}
 }

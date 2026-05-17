@@ -6,6 +6,7 @@ import (
 	"git.wisehodl.dev/jay/go-mana-component"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
+	"sync"
 	"testing"
 	"time"
 )
@@ -98,11 +99,14 @@ type mockSessionHarness struct {
 	id             string
 	filters        [][]byte
 	req            []byte
-	eose           chan struct{}
-	closed         chan struct{}
+	inbox          chan sessionMessage
+	events         chan ReqEvent
+	closed         chan ReqClosed
+	closedOnce     *sync.Once
 	done           chan struct{}
 	sent           chan []byte
 	send           func([]byte) error
+	preterminate   func()
 	terminatedWith chan terminateReason
 	terminate      func(terminateReason)
 }
@@ -116,6 +120,8 @@ func newMockSessionHarness() *mockSessionHarness {
 		sent <- data
 		return nil
 	}
+	inbox := make(chan sessionMessage, 16)
+	preterminate := func() { close(inbox) }
 	terminatedWith := make(chan terminateReason, 1)
 	terminate := func(r terminateReason) { terminatedWith <- r }
 
@@ -124,11 +130,14 @@ func newMockSessionHarness() *mockSessionHarness {
 		id:             id,
 		filters:        filters,
 		req:            envelope.EncloseReq(id, filters),
-		eose:           make(chan struct{}),
-		closed:         make(chan struct{}),
+		inbox:          inbox,
+		events:         make(chan ReqEvent, 16),
+		closed:         make(chan ReqClosed, 16),
+		closedOnce:     &sync.Once{},
 		done:           make(chan struct{}),
 		sent:           sent,
 		send:           send,
+		preterminate:   preterminate,
 		terminatedWith: terminatedWith,
 		terminate:      terminate,
 	}
