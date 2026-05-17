@@ -614,12 +614,37 @@ func TestRequestManager_Query(t *testing.T) {
 	})
 
 	t.Run("returns partial events on timeout", func(t *testing.T) {
-		// connect the envoy
-		// in a goroutine: inject two EVENTs then block (no EOSE, no CLOSED)
-		// call Query with a short timeout
-		// assert Query returns after the timeout
-		// assert the returned slice contains exactly two events
-		// assert closed is nil
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		eventData := []byte(`{"id":"abc"}`)
+		const queryTimeout = 100 * time.Millisecond
+
+		go func() {
+			reqBytes := <-p.sent
+			subID, _, err := envelope.FindReq(reqBytes)
+			if err != nil {
+				t.Errorf("FindReq: %v", err)
+				return
+			}
+			for range 2 {
+				p.receive(envelope.EncloseSubscriptionEvent(subID, eventData))
+			}
+			// no EOSE, no CLOSED — Query must time out
+		}()
+
+		start := time.Now()
+		events, closed := m.Query(filters, queryTimeout)
+		elapsed := time.Since(start)
+
+		assert.GreaterOrEqual(t, elapsed, queryTimeout)
+		assert.Len(t, events, 2)
+		assert.Nil(t, closed)
 	})
 
 	t.Run("returns nil nil when disconnected", func(t *testing.T) {
