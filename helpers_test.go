@@ -133,3 +133,16 @@ func newMockSessionHarness() *mockSessionHarness {
 		terminate:      terminate,
 	}
 }
+
+// MockEnvoy
+
+func newMockEnvoy(t *testing.T) (*mockPool, *Envoy) {
+	t.Helper()
+
+	p := newMockPool(t)
+	emb := NewEmbassy(p.ctx, p.plugin, nil)
+	err := emb.Dispatch(p.url)
+	assert.NoError(t, err)
+	envoy := emb.Call(p.url)
+	return p, envoy
+}

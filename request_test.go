@@ -208,11 +208,7 @@ func TestRequestManager_Session(t *testing.T) {
 
 func TestRequestManager_Stream(t *testing.T) {
 	t.Run("spawns session and sends req when connected", func(t *testing.T) {
-		p := newMockPool(t)
-		emb := NewEmbassy(p.ctx, p.plugin, nil)
-		err := emb.Dispatch(p.url)
-		assert.NoError(t, err)
-		envoy := emb.Call(p.url)
+		p, envoy := newMockEnvoy(t)
 
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
@@ -239,11 +235,7 @@ func TestRequestManager_Stream(t *testing.T) {
 	})
 
 	t.Run("registers but does not spawn session when disconnected", func(t *testing.T) {
-		p := newMockPool(t)
-		emb := NewEmbassy(p.ctx, p.plugin, nil)
-		err := emb.Dispatch(p.url)
-		assert.NoError(t, err)
-		envoy := emb.Call(p.url)
+		p, envoy := newMockEnvoy(t)
 
 		m := NewRequestManager(envoy)
 		filters := [][]byte{[]byte(`{}`)}
