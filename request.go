@@ -273,11 +273,24 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 			return
 		}
 		select {
-		case req.buffer <- ReqEvent{PeerID: msg.ID, ReceivedAt: msg.ReceivedAt, Data: event}:
-		default:
+		case req.buffer <- ReqEvent{
+			PeerID: msg.ID, ReceivedAt: msg.ReceivedAt, Data: event}:
 		}
 	case "EOSE":
-		// route to session
+		subID, err := envelope.FindEOSE(msg.Data)
+		if err != nil {
+			return
+		}
+		m.mu.RLock()
+		sub, ok := m.inboxSubs[subID]
+		m.mu.RUnlock()
+		if !ok {
+			return
+		}
+		select {
+		case sub.eose <- struct{}{}:
+		default:
+		}
 	case "CLOSED":
 		// route to session and request
 	}

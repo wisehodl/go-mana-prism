@@ -299,11 +299,54 @@ func TestRequestManager_Stream(t *testing.T) {
 	})
 
 	t.Run("ignores eose", func(t *testing.T) {
-		// connect, call Stream
-		// inject an EOSE envelope for the sub id
-		// assert the events channel does not close
-		// assert the closed channel receives nothing
-		// assert a subsequent EVENT is still forwarded
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		filters := [][]byte{[]byte(`{}`)}
+		id, events, closed := m.Stream(filters)
+
+		// drain the REQ send
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected REQ send")
+
+		p.receive(envelope.EncloseEOSE(id))
+
+		Never(t, func() bool {
+			m.mu.RLock()
+			_, ok := m.sessions[id]
+			m.mu.RUnlock()
+			return !ok
+		}, "session should not terminate after eose")
+
+		Never(t, func() bool {
+			select {
+			case <-closed:
+				return true
+			default:
+				return false
+			}
+		}, "closed should not signal on eose for stream")
+
+		// assert a subsequent event is still forwarded
+		eventA := []byte(`{"id":"a"}`)
+		p.receive(envelope.EncloseSubscriptionEvent(id, eventA))
+
+		Eventually(t, func() bool {
+			select {
+			case ev := <-events:
+				return assert.Equal(t, eventA, ev.Data)
+			default:
+				return false
+			}
+		}, "expected event after eose")
 	})
 
 	t.Run("closed deregisters and signals caller", func(t *testing.T) {
