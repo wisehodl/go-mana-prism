@@ -350,11 +350,59 @@ func TestRequestManager_Stream(t *testing.T) {
 	})
 
 	t.Run("closed deregisters and signals caller", func(t *testing.T) {
-		// connect, call Stream
-		// inject a CLOSED envelope with a reason string
-		// assert the closed channel yields a ReqClosed with the correct message
-		// assert the events channel eventually closes (buffer drained and deregistered)
-		// assert the registration is removed from reqs
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		filters := [][]byte{[]byte(`{}`)}
+		id, events, closed := m.Stream(filters)
+
+		// drain the REQ send
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected REQ send")
+
+		p.receive(envelope.EncloseClosed(id, "error: test"))
+
+		var got ReqClosed
+		Eventually(t, func() bool {
+			select {
+			case got = <-closed:
+				return true
+			default:
+				return false
+			}
+		}, "expected closed signal")
+		assert.Equal(t, "error: test", got.Data)
+
+		Eventually(t, func() bool {
+			select {
+			case _, ok := <-events:
+				return !ok
+			default:
+				return false
+			}
+		}, "events channel should close after deregistration")
+
+		Eventually(t, func() bool {
+			select {
+			case _, ok := <-closed:
+				return !ok
+			default:
+				return false
+			}
+		}, "closed channel should close after deregistration")
+
+		m.mu.RLock()
+		_, ok := m.reqs[id]
+		m.mu.RUnlock()
+		assert.False(t, ok, "registration should be removed from reqs")
 	})
 }
 

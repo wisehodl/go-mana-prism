@@ -292,7 +292,21 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 		default:
 		}
 	case "CLOSED":
-		// route to session and request
+		subID, message, err := envelope.FindClosed(msg.Data)
+		if err != nil {
+			return
+		}
+		m.mu.RLock()
+		req, reqOk := m.reqs[subID]
+		sub, subOk := m.inboxSubs[subID]
+		m.mu.RUnlock()
+		if reqOk {
+			req.closed <- ReqClosed{
+				PeerID: msg.ID, ReceivedAt: msg.ReceivedAt, Data: message}
+		}
+		if subOk {
+			sub.closed <- struct{}{}
+		}
 	}
 }
 
