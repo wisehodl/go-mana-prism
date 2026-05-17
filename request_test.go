@@ -124,17 +124,6 @@ func TestRequestManager_Session(t *testing.T) {
 				return false
 			}
 		}, "terminate should not be called on eose for stream")
-
-		// session is still running; done closes it cleanly
-		close(h.done)
-		Eventually(t, func() bool {
-			select {
-			case r := <-h.terminatedWith:
-				return r == termExternal
-			default:
-				return false
-			}
-		}, "expected termExternal after done closed")
 	})
 
 	t.Run("sends close on eose if query", func(t *testing.T) {
@@ -179,9 +168,32 @@ func TestRequestManager_Session(t *testing.T) {
 	})
 
 	t.Run("terminates on done close", func(t *testing.T) {
-		// construct a session with a done channel
-		// close the done channel
-		// assert terminate was called with termExternal
+		h := newMockSessionHarness()
+		s := newSession(
+			h.ctx, h.id, h.req, h.eose, h.closed, h.done,
+			h.send, h.terminate, false, nil)
+		go s.run()
+
+		// wait for initial req
+		Eventually(t, func() bool {
+			select {
+			case <-h.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected initial send")
+
+		// close with done
+		close(h.done)
+		Eventually(t, func() bool {
+			select {
+			case r := <-h.terminatedWith:
+				return r == termExternal
+			default:
+				return false
+			}
+		}, "expected termExternal after done closed")
 	})
 
 	t.Run("terminates on context cancel", func(t *testing.T) {
