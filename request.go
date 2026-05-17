@@ -130,7 +130,8 @@ func NewRequestManager(e *Envoy) *RequestManager {
 	}
 
 	// start event handler
-	// start inbox router
+	m.wg.Add(1)
+	go m.routeInbox()
 
 	return m
 }
@@ -240,11 +241,46 @@ func (m *RequestManager) handleEvents() {
 func (m *RequestManager) routeInbox() {
 	defer m.wg.Done()
 
-	// unpack/route inbox message
-	// events forward directly to request event buffer
-	// eose goes to session
-	// closed goes both to session and request
-	// uses read lock for map lookups
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case msg, ok := <-m.inbox:
+			if !ok {
+				return
+			}
+			m.dispatchInbox(msg)
+		}
+	}
+}
+
+func (m *RequestManager) dispatchInbox(msg InboxMessage) {
+	label, err := envelope.GetLabel(msg.Data)
+	if err != nil {
+		return
+	}
+
+	switch string(label) {
+	case "EVENT":
+		subID, event, err := envelope.FindSubscriptionEvent(msg.Data)
+		if err != nil {
+			return
+		}
+		m.mu.RLock()
+		req, ok := m.reqs[subID]
+		m.mu.RUnlock()
+		if !ok {
+			return
+		}
+		select {
+		case req.buffer <- ReqEvent{PeerID: msg.ID, ReceivedAt: msg.ReceivedAt, Data: event}:
+		default:
+		}
+	case "EOSE":
+		// route to session
+	case "CLOSED":
+		// route to session and request
+	}
 }
 
 // ----------------------------------------------------------------------------

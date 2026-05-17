@@ -256,10 +256,46 @@ func TestRequestManager_Stream(t *testing.T) {
 	})
 
 	t.Run("forwards events to caller", func(t *testing.T) {
-		// connect, call Stream, get events channel
-		// inject two EVENT envelopes for the correct sub id into mock inbox
-		// inject one EVENT envelope for an unrelated sub id
-		// assert exactly two events appear on the caller's events channel
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		filters := [][]byte{[]byte(`{}`)}
+		id, events, _ := m.Stream(filters)
+
+		// drain the REQ send
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected REQ send")
+
+		eventA := []byte(`{"id":"a"}`)
+		eventB := []byte(`{"id":"b"}`)
+		eventC := []byte(`{"id":"c"}`)
+		p.receive(envelope.EncloseSubscriptionEvent(id, eventA))
+		p.receive(envelope.EncloseSubscriptionEvent(id, eventB))
+		p.receive(envelope.EncloseSubscriptionEvent("unrelated", eventC))
+
+		var got []ReqEvent
+		Eventually(t, func() bool {
+			for {
+				select {
+				case ev := <-events:
+					got = append(got, ev)
+				default:
+					return len(got) >= 2
+				}
+			}
+		}, "expected two events")
+
+		assert.Len(t, got, 2)
+		assert.Equal(t, eventA, got[0].Data)
+		assert.Equal(t, eventB, got[1].Data)
 	})
 
 	t.Run("ignores eose", func(t *testing.T) {
