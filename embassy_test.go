@@ -1,7 +1,6 @@
 package prism
 
 import (
-	"context"
 	"git.wisehodl.dev/jay/go-honeybee"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
@@ -10,63 +9,15 @@ import (
 	"time"
 )
 
-func TestEmbassy_TEMPLATE(t *testing.T) {
-	ctx := context.Background()
-	url := "wss://test"
-
-	connect := func(url string) error { return nil }
-	remove := func(url string) error { return nil }
-	sent := false
-	_ = sent
-	send := func(url string, data []byte) error {
-		sent = true
-		return nil
-	}
-	events := make(chan honeybee.OutboundPoolEvent)
-	inbox := make(chan honeybee.InboxMessage)
-	pool := EmbassyPlugin{
-		Connect: connect,
-		Remove:  remove,
-		Send:    send,
-		Events:  events,
-		Inbox:   inbox,
-	}
-
-	embassy := NewEmbassy(ctx, pool, nil)
-	embassy.Dispatch(url)
-	envoy := embassy.Call(url)
-	assert.NotNil(t, envoy)
-}
-
 func TestEmbassy_Dispatch(t *testing.T) {
-	ctx := context.Background()
-	url := "wss://test"
+	p := newMockPool(t)
 
-	connectCalled := make(chan struct{})
-	removeCalled := make(chan struct{})
-	connect := func(url string) error { close(connectCalled); return nil }
-	remove := func(url string) error { close(removeCalled); return nil }
-	sent := false
-	send := func(url string, data []byte) error {
-		sent = true
-		return nil
-	}
-	events := make(chan honeybee.OutboundPoolEvent)
-	inbox := make(chan honeybee.InboxMessage)
-	pool := EmbassyPlugin{
-		Connect: connect,
-		Remove:  remove,
-		Send:    send,
-		Events:  events,
-		Inbox:   inbox,
-	}
-
-	embassy := NewEmbassy(ctx, pool, nil)
-	embassy.Dispatch(url)
-	envoy := embassy.Call(url)
+	embassy := NewEmbassy(p.ctx, p.plugin, nil)
+	embassy.Dispatch(p.url)
+	envoy := embassy.Call(p.url)
 	assert.NotNil(t, envoy)
 
-	_, ok := <-connectCalled
+	_, ok := <-p.added
 	assert.False(t, ok)
 
 	eventSub := envoy.SubscribeEvents()
@@ -89,16 +40,16 @@ func TestEmbassy_Dispatch(t *testing.T) {
 		close(inboxDone)
 	}()
 
-	events <- honeybee.OutboundPoolEvent{
-		ID: url, Kind: honeybee.OutboundEventConnected, At: time.Now()}
-	events <- honeybee.OutboundPoolEvent{
+	p.events <- honeybee.OutboundPoolEvent{
+		ID: p.url, Kind: honeybee.OutboundEventConnected, At: time.Now()}
+	p.events <- honeybee.OutboundPoolEvent{
 		ID: "wss://other", Kind: honeybee.OutboundEventConnected, At: time.Now()}
-	inbox <- honeybee.InboxMessage{
-		ID:         url,
+	p.inbox <- honeybee.InboxMessage{
+		ID:         p.url,
 		Data:       envelope.EncloseEvent([]byte("{}")),
 		ReceivedAt: time.Now(),
 	}
-	inbox <- honeybee.InboxMessage{
+	p.inbox <- honeybee.InboxMessage{
 		ID:         "wss://other",
 		Data:       envelope.EncloseEvent([]byte("{}")),
 		ReceivedAt: time.Now(),
@@ -116,11 +67,18 @@ func TestEmbassy_Dispatch(t *testing.T) {
 		"should have only gotten one inbox message")
 
 	envoy.Send([]byte("hello"))
-	assert.True(t, sent)
+	Eventually(t, func() bool {
+		select {
+		default:
+			return false
+		case msg := <-p.sent:
+			return string(msg) == "hello"
+		}
+	}, "should have sent message")
 
 	envoy.Dismiss()
 
-	_, ok = <-removeCalled
+	_, ok = <-p.removed
 	assert.False(t, ok)
 
 	_, ok = <-eventDone
@@ -130,6 +88,6 @@ func TestEmbassy_Dispatch(t *testing.T) {
 	assert.False(t, ok)
 
 	// envoy no longer in embassy
-	envoy = embassy.Call(url)
+	envoy = embassy.Call(p.url)
 	assert.Nil(t, envoy)
 }
