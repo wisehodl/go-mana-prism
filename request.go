@@ -84,7 +84,8 @@ const (
 	termSendFailed terminateReason = iota
 	termCloseSent
 	termReceivedClosed
-	termExternal
+	termDone
+	termCancelled
 )
 
 // ----------------------------------------------------------------------------
@@ -178,9 +179,33 @@ func (m *RequestManager) Query(
 	return
 }
 
+func (m *RequestManager) Cancel(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	req, ok := m.reqs[id]
+	if !ok {
+		return fmt.Errorf("Cancel: unknown id %q", id)
+	}
+
+	if sess, ok := m.sessions[id]; ok {
+		sess.Close()
+	}
+
+	req.once.Do(func() {
+		close(req.buffer)
+		close(req.closed)
+	})
+	delete(m.reqs, id)
+
+	return nil
+}
+
 func (m *RequestManager) Close() {
 	m.cancel()
 	m.wg.Wait()
+	// call session.Close for each open session
+	// manually deregister and close each registered request.
 }
 
 func (m *RequestManager) spawnSession(req *request) {
@@ -356,10 +381,11 @@ func (s *session) run() {
 				return
 			}
 		case <-s.done:
-			s.terminate(termExternal)
+			s.terminate(termDone)
 			return
 		case <-s.ctx.Done():
-			s.terminate(termExternal)
+			s.send(envelope.EncloseClose(s.id))
+			s.terminate(termCancelled)
 			return
 		case <-s.eose:
 			if s.closeOnEOSE {
