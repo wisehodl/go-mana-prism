@@ -204,8 +204,24 @@ func (m *RequestManager) Cancel(id string) error {
 func (m *RequestManager) Close() {
 	m.cancel()
 	m.wg.Wait()
-	// call session.Close for each open session
-	// manually deregister and close each registered request.
+
+	m.mu.Lock()
+	for _, sess := range m.sessions {
+		sess.Close()
+	}
+	m.mu.Unlock()
+
+	m.sessionWg.Wait()
+
+	m.mu.Lock()
+	for id, req := range m.reqs {
+		req.once.Do(func() {
+			close(req.buffer)
+			close(req.closed)
+		})
+		delete(m.reqs, id)
+	}
+	m.mu.Unlock()
 }
 
 func (m *RequestManager) spawnSession(req *request) {
