@@ -223,21 +223,22 @@ func (s *session) run() {
 	sent := make(chan error, 1)
 	go func() { sent <- s.send(s.req) }()
 
-	select {
-	case err := <-sent:
-		if err != nil {
-			s.terminate(termSendFailed)
+	for {
+		select {
+		case err := <-sent:
+			if err != nil {
+				s.terminate(termSendFailed)
+				return
+			}
+		case <-s.done:
+			s.terminate(termExternal)
 			return
+		case <-s.ctx.Done():
+			s.terminate(termExternal)
+			return
+		case <-s.eose:
 		}
-	case <-s.done:
-		s.terminate(termExternal)
-		return
-	case <-s.ctx.Done():
-		s.terminate(termExternal)
-		return
 	}
-
-	// TODO: main message loop (eose, closed, done, ctx) -- deferred to later tests
 }
 
 func (s *session) Close() {

@@ -12,6 +12,7 @@ import (
 // Helpers
 
 type mockSessionHarness struct {
+	ctx            context.Context
 	id             string
 	filters        [][]byte
 	req            []byte
@@ -25,6 +26,7 @@ type mockSessionHarness struct {
 }
 
 func newMockSessionHarness() *mockSessionHarness {
+	ctx := component.MustNew(context.Background(), "prism", "test")
 	filters := [][]byte{[]byte(`{}`)}
 	id := "TESTREQ"
 	sent := make(chan []byte, 2)
@@ -36,6 +38,7 @@ func newMockSessionHarness() *mockSessionHarness {
 	terminate := func(r terminateReason) { terminatedWith <- r }
 
 	return &mockSessionHarness{
+		ctx:            ctx,
 		id:             id,
 		filters:        filters,
 		req:            envelope.EncloseReq(id, filters),
@@ -57,10 +60,8 @@ func newMockSessionHarness() *mockSessionHarness {
 func TestRequestManager_Session(t *testing.T) {
 	t.Run("sends req on start", func(t *testing.T) {
 		h := newMockSessionHarness()
-
-		ctx := component.MustNew(context.Background(), "prism", "test")
 		s := newSession(
-			ctx, h.id, h.req, h.eose, h.closed, h.done,
+			h.ctx, h.id, h.req, h.eose, h.closed, h.done,
 			h.send, h.terminate, false, nil)
 		go s.run()
 
@@ -79,12 +80,10 @@ func TestRequestManager_Session(t *testing.T) {
 
 	t.Run("terminates on failed req send", func(t *testing.T) {
 		h := newMockSessionHarness()
-
 		send := func([]byte) error { return fmt.Errorf("send failed") }
 
-		ctx := component.MustNew(context.Background(), "prism", "test")
 		s := newSession(
-			ctx, h.id, h.req, h.eose, h.closed, h.done,
+			h.ctx, h.id, h.req, h.eose, h.closed, h.done,
 			send, h.terminate, false, nil)
 		go s.run()
 
@@ -99,10 +98,43 @@ func TestRequestManager_Session(t *testing.T) {
 	})
 
 	t.Run("ignores eose if stream", func(t *testing.T) {
-		// construct a session with closeOnEOSE = false
-		// send a value into the eose channel
-		// assert terminate is never called
-		// assert a subsequent event still causes the session to run normally
+		h := newMockSessionHarness()
+		s := newSession(
+			h.ctx, h.id, h.req, h.eose, h.closed, h.done,
+			h.send, h.terminate, false, nil)
+		go s.run()
+
+		// wait for initial REQ send before proceeding
+		Eventually(t, func() bool {
+			select {
+			case <-h.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected initial send")
+
+		h.eose <- struct{}{}
+
+		Never(t, func() bool {
+			select {
+			case <-h.terminatedWith:
+				return true
+			default:
+				return false
+			}
+		}, "terminate should not be called on eose for stream")
+
+		// session is still running; done closes it cleanly
+		close(h.done)
+		Eventually(t, func() bool {
+			select {
+			case r := <-h.terminatedWith:
+				return r == termExternal
+			default:
+				return false
+			}
+		}, "expected termExternal after done closed")
 	})
 
 	t.Run("sends close on eose if query", func(t *testing.T) {
