@@ -163,7 +163,7 @@ func (m *RequestManager) Stream(
 		close(events)
 	}()
 	if m.envoy.IsConnected() {
-		m.spawnSession(req)
+		m.spawnSession(req, false)
 	}
 	m.mu.Unlock()
 
@@ -174,12 +174,53 @@ func (m *RequestManager) Query(
 	filters [][]byte,
 	timeout time.Duration,
 ) (events []ReqEvent, closed *ReqClosed) {
-	// return if disconnected
-	// generate id
-	// create channels
-	// spawn session
-	// collect events
-	return
+	if !m.envoy.IsConnected() {
+		return nil, nil
+	}
+
+	id := generateID()
+	buffer := make(chan ReqEvent, 64)
+	eventsCh := make(chan ReqEvent)
+	closedCh := make(chan ReqClosed, 1)
+
+	req := &request{
+		id:      id,
+		filters: filters,
+		buffer:  buffer,
+		events:  eventsCh,
+		closed:  closedCh,
+	}
+
+	m.mu.Lock()
+	m.reqs[id] = req
+	go func() {
+		bufferedPipe(buffer, eventsCh)
+		close(eventsCh)
+	}()
+
+	m.spawnSession(req, true)
+	m.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(m.ctx, timeout)
+	defer cancel()
+
+	var result []ReqEvent
+	for {
+		select {
+		case ev, ok := <-eventsCh:
+			if !ok {
+				return result, nil
+			}
+			result = append(result, ev)
+		case cl, ok := <-closedCh:
+			if !ok {
+				return result, nil
+			}
+			return result, &cl
+		case <-ctx.Done():
+			return result, nil
+		}
+	}
 }
 
 func (m *RequestManager) Cancel(id string) error {
@@ -232,7 +273,7 @@ func (m *RequestManager) Close() {
 	m.mu.Unlock()
 }
 
-func (m *RequestManager) spawnSession(req *request) {
+func (m *RequestManager) spawnSession(req *request, query bool) {
 	eose := make(chan struct{})
 	closed := make(chan struct{})
 
@@ -249,7 +290,7 @@ func (m *RequestManager) spawnSession(req *request) {
 			delete(m.sessions, req.id)
 			m.mu.Unlock()
 			m.sessionWg.Done()
-			if r == termReceivedClosed {
+			if r == termReceivedClosed || r == termCloseSent {
 				req.deregisterOnce.Do(func() {
 					close(req.buffer)
 					close(req.closed)
@@ -266,7 +307,7 @@ func (m *RequestManager) spawnSession(req *request) {
 		m.ctx, req.id, req_env,
 		eose, closed, m.done,
 		m.envoy.Send, terminate,
-		false, m.handler,
+		query, m.handler,
 	)
 	m.sessions[req.id] = sess
 	m.sessionWg.Add(1)

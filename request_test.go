@@ -5,6 +5,7 @@ import (
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
 	"testing"
+	"time"
 )
 
 // Session tests exercise the session struct in isolation.
@@ -541,12 +542,46 @@ func TestRequestManager_Cancel(t *testing.T) {
 
 func TestRequestManager_Query(t *testing.T) {
 	t.Run("returns events and nil closed on eose", func(t *testing.T) {
-		// connect the envoy
-		// in a goroutine: inject three EVENT envelopes then EOSE for the query sub id
-		// call Query (blocks until return)
-		// assert the returned slice contains exactly three events
-		// assert closed is nil
-		// assert mock send was called with a CLOSE envelope (closeOnEOSE behavior)
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		eventData := []byte(`{"id":"abc"}`)
+
+		go func() {
+			// wait for the REQ to arrive, extract the sub ID
+			reqBytes := <-p.sent
+			subID, _, err := envelope.FindReq(reqBytes)
+			if err != nil {
+				t.Errorf("FindReq: %v", err)
+				return
+			}
+			// inject three EVENTs then EOSE
+			for range 3 {
+				raw := envelope.EncloseSubscriptionEvent(subID, eventData)
+				p.receive([]byte(raw))
+			}
+			p.receive(envelope.EncloseEOSE(subID))
+		}()
+
+		events, closed := m.Query(filters, TestTimeout)
+
+		assert.Len(t, events, 3)
+		assert.Nil(t, closed)
+
+		// CLOSE envelope should have been sent by the session
+		var closeEnv []byte
+		select {
+		case closeEnv = <-p.sent:
+		case <-time.After(TestTimeout):
+			t.Fatal("timed out waiting for CLOSE envelope")
+		}
+		closeLabel, _ := envelope.GetLabel(closeEnv)
+		assert.Equal(t, "CLOSE", string(closeLabel))
 	})
 
 	t.Run("returns empty events and closed on relay closed", func(t *testing.T) {
