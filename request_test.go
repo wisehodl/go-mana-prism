@@ -404,6 +404,39 @@ func TestRequestManager_Stream(t *testing.T) {
 		m.mu.RUnlock()
 		assert.False(t, ok, "registration should be removed from reqs")
 	})
+
+	t.Run("duplicate closed does not panic", func(t *testing.T) {
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		filters := [][]byte{[]byte(`{}`)}
+		id, _, _ := m.Stream(filters)
+
+		// drain the REQ send
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected REQ send")
+
+		// inject both before the router can process either
+		p.receive(envelope.EncloseClosed(id, "error: first"))
+		p.receive(envelope.EncloseClosed(id, "error: second"))
+
+		// if the router panics, the test will fail with a goroutine crash;
+		// assert the session eventually terminates cleanly as a liveness check
+		Eventually(t, func() bool {
+			m.mu.RLock()
+			_, ok := m.sessions[id]
+			m.mu.RUnlock()
+			return !ok
+		}, "session should terminate after closed")
+	})
 }
 
 func TestRequestManager_Cancel(t *testing.T) {

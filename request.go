@@ -48,12 +48,13 @@ type RequestManager struct {
 }
 
 type request struct {
-	id      string
-	filters [][]byte
-	buffer  chan ReqEvent
-	events  chan ReqEvent
-	closed  chan ReqClosed
-	once    sync.Once
+	id             string
+	filters        [][]byte
+	buffer         chan ReqEvent
+	events         chan ReqEvent
+	closed         chan ReqClosed
+	deregisterOnce sync.Once
+	closedOnce     sync.Once
 }
 
 type session struct {
@@ -74,8 +75,10 @@ type session struct {
 }
 
 type sessionSub struct {
-	eose   chan<- struct{}
-	closed chan<- struct{}
+	eose       chan<- struct{}
+	closed     chan<- struct{}
+	eoseOnce   sync.Once
+	closedOnce sync.Once
 }
 
 type terminateReason int
@@ -192,7 +195,7 @@ func (m *RequestManager) Cancel(id string) error {
 		sess.Close()
 	}
 
-	req.once.Do(func() {
+	req.deregisterOnce.Do(func() {
 		close(req.buffer)
 		close(req.closed)
 	})
@@ -220,7 +223,7 @@ func (m *RequestManager) Close() {
 
 	m.mu.Lock()
 	for id, req := range m.reqs {
-		req.once.Do(func() {
+		req.deregisterOnce.Do(func() {
 			close(req.buffer)
 			close(req.closed)
 		})
@@ -247,7 +250,7 @@ func (m *RequestManager) spawnSession(req *request) {
 			m.mu.Unlock()
 			m.sessionWg.Done()
 			if r == termReceivedClosed {
-				req.once.Do(func() {
+				req.deregisterOnce.Do(func() {
 					close(req.buffer)
 					close(req.closed)
 				})
@@ -333,10 +336,12 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 		if !ok {
 			return
 		}
-		select {
-		case sub.eose <- struct{}{}:
-		default:
-		}
+		sub.eoseOnce.Do(func() {
+			select {
+			case sub.eose <- struct{}{}:
+			default:
+			}
+		})
 	case "CLOSED":
 		subID, message, err := envelope.FindClosed(msg.Data)
 		if err != nil {
@@ -347,11 +352,15 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 		sub, subOk := m.inboxSubs[subID]
 		m.mu.RUnlock()
 		if reqOk {
-			req.closed <- ReqClosed{
-				PeerID: msg.ID, ReceivedAt: msg.ReceivedAt, Data: message}
+			req.closedOnce.Do(func() {
+				req.closed <- ReqClosed{
+					PeerID: msg.ID, ReceivedAt: msg.ReceivedAt, Data: message}
+			})
 		}
 		if subOk {
-			sub.closed <- struct{}{}
+			sub.closedOnce.Do(func() {
+				sub.closed <- struct{}{}
+			})
 		}
 	}
 }
