@@ -205,11 +205,16 @@ func (m *RequestManager) Close() {
 	m.cancel()
 	m.wg.Wait()
 
-	m.mu.Lock()
-	for _, sess := range m.sessions {
+	m.mu.RLock()
+	sessions := make(map[string]*session)
+	for id, s := range m.sessions {
+		sessions[id] = s
+	}
+	m.mu.RUnlock()
+
+	for _, sess := range sessions {
 		sess.Close()
 	}
-	m.mu.Unlock()
 
 	m.sessionWg.Wait()
 
