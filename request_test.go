@@ -648,9 +648,16 @@ func TestRequestManager_Query(t *testing.T) {
 	})
 
 	t.Run("returns nil nil when disconnected", func(t *testing.T) {
-		// do not connect the envoy
-		// call Query
-		// assert it returns immediately with nil events and nil closed
+		_, envoy := newMockEnvoy(t)
+		// do not connect
+
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		events, closed := m.Query([][]byte{[]byte(`{}`)}, TestTimeout)
+
+		assert.Nil(t, events)
+		assert.Nil(t, closed)
 	})
 }
 
