@@ -239,10 +239,28 @@ func TestRequestManager_Stream(t *testing.T) {
 	})
 
 	t.Run("registers but does not spawn session when disconnected", func(t *testing.T) {
-		// do not connect the envoy
-		// call Stream
-		// assert mock send is never called
-		// assert the returned channels are non-nil and open
+		p := newMockPool(t)
+		emb := NewEmbassy(p.ctx, p.plugin, nil)
+		err := emb.Dispatch(p.url)
+		assert.NoError(t, err)
+		envoy := emb.Call(p.url)
+
+		m := NewRequestManager(envoy)
+		filters := [][]byte{[]byte(`{}`)}
+		id, events, closed := m.Stream(filters)
+
+		assert.NotEmpty(t, id)
+		assert.NotNil(t, events)
+		assert.NotNil(t, closed)
+
+		Never(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "send should not be called when disconnected")
 	})
 
 	t.Run("forwards events to caller", func(t *testing.T) {
