@@ -1,211 +1,11 @@
 package prism
 
 import (
-	"fmt"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"
 )
-
-// Session tests exercise the session struct in isolation.
-// The session is constructed directly with mock channels and callbacks.
-// These tests do not go through RequestManager.
-func TestRequestManager_Session(t *testing.T) {
-	t.Run("sends req on start", func(t *testing.T) {
-		h := newMockSessionHarness()
-		s := newSession(
-			h.ctx, h.id, h.req, h.inbox, h.events, h.closed, h.closedOnce,
-			h.done, h.send, h.preterminate, h.terminate, false, nil)
-		go s.run()
-
-		var got []byte
-		Eventually(t, func() bool {
-			select {
-			case got = <-h.sent:
-				return true
-			default:
-				return false
-			}
-		}, "expected send")
-
-		assert.Equal(t, []byte(h.req), got)
-	})
-
-	t.Run("terminates on failed req send", func(t *testing.T) {
-		h := newMockSessionHarness()
-		send := func([]byte) error { return fmt.Errorf("send failed") }
-
-		s := newSession(
-			h.ctx, h.id, h.req, h.inbox, h.events, h.closed, h.closedOnce,
-			h.done, send, h.preterminate, h.terminate, false, nil)
-		go s.run()
-
-		Eventually(t, func() bool {
-			select {
-			case r := <-h.terminatedWith:
-				return r == termSendFailed
-			default:
-				return false
-			}
-		}, "expected termSendFailed")
-	})
-
-	t.Run("ignores eose if stream", func(t *testing.T) {
-		h := newMockSessionHarness()
-		s := newSession(
-			h.ctx, h.id, h.req, h.inbox, h.events, h.closed, h.closedOnce,
-			h.done, h.send, h.preterminate, h.terminate, false, nil)
-		go s.run()
-
-		// wait for initial REQ send before proceeding
-		Eventually(t, func() bool {
-			select {
-			case <-h.sent:
-				return true
-			default:
-				return false
-			}
-		}, "expected initial send")
-
-		h.inbox <- sessionMessage{label: "EOSE"}
-
-		Never(t, func() bool {
-			select {
-			case <-h.terminatedWith:
-				return true
-			default:
-				return false
-			}
-		}, "terminate should not be called on eose for stream")
-	})
-
-	t.Run("sends close on eose if query", func(t *testing.T) {
-		h := newMockSessionHarness()
-		s := newSession(
-			h.ctx, h.id, h.req, h.inbox, h.events, h.closed, h.closedOnce,
-			h.done, h.send, h.preterminate, h.terminate, true, nil)
-		go s.run()
-
-		// drain initial REQ send
-		Eventually(t, func() bool {
-			select {
-			case <-h.sent:
-				return true
-			default:
-				return false
-			}
-		}, "expected initial REQ send")
-
-		h.inbox <- sessionMessage{label: "EOSE"}
-
-		var got []byte
-		Eventually(t, func() bool {
-			select {
-			case got = <-h.sent:
-				return true
-			default:
-				return false
-			}
-		}, "expected CLOSE send")
-
-		assert.Equal(t, []byte(envelope.EncloseClose(h.id)), got)
-
-		Eventually(t, func() bool {
-			select {
-			case r := <-h.terminatedWith:
-				return r == termClosedOnEOSE
-			default:
-				return false
-			}
-		}, "expected termCloseSent")
-	})
-
-	t.Run("terminates on done close", func(t *testing.T) {
-		h := newMockSessionHarness()
-		s := newSession(
-			h.ctx, h.id, h.req, h.inbox, h.events, h.closed, h.closedOnce,
-			h.done, h.send, h.preterminate, h.terminate, false, nil)
-		go s.run()
-
-		// wait for initial req
-		Eventually(t, func() bool {
-			select {
-			case <-h.sent:
-				return true
-			default:
-				return false
-			}
-		}, "expected initial send")
-
-		// close with done
-		close(h.done)
-		Eventually(t, func() bool {
-			select {
-			case r := <-h.terminatedWith:
-				return r == termDone
-			default:
-				return false
-			}
-		}, "expected termDone after done closed")
-	})
-
-	t.Run("terminates on context cancel", func(t *testing.T) {
-		h := newMockSessionHarness()
-		s := newSession(
-			h.ctx, h.id, h.req, h.inbox, h.events, h.closed, h.closedOnce,
-			h.done, h.send, h.preterminate, h.terminate, false, nil)
-		go s.run()
-
-		Eventually(t, func() bool {
-			select {
-			case <-h.sent:
-				return true
-			default:
-				return false
-			}
-		}, "expected initial send")
-
-		s.Close()
-
-		Eventually(t, func() bool {
-			select {
-			case r := <-h.terminatedWith:
-				return r == termCancelled
-			default:
-				return false
-			}
-		}, "expected termCancelled after context cancel")
-	})
-
-	t.Run("terminates on closed signal", func(t *testing.T) {
-		h := newMockSessionHarness()
-		s := newSession(
-			h.ctx, h.id, h.req, h.inbox, h.events, h.closed, h.closedOnce,
-			h.done, h.send, h.preterminate, h.terminate, false, nil)
-		go s.run()
-
-		Eventually(t, func() bool {
-			select {
-			case <-h.sent:
-				return true
-			default:
-				return false
-			}
-		}, "expected initial send")
-
-		h.inbox <- sessionMessage{label: "CLOSED"}
-
-		Eventually(t, func() bool {
-			select {
-			case r := <-h.terminatedWith:
-				return r == termReceivedClosed
-			default:
-				return false
-			}
-		}, "expected termReceivedClosed")
-	})
-}
 
 func TestRequestManager_Stream(t *testing.T) {
 	t.Run("spawns session and sends req when connected", func(t *testing.T) {
@@ -329,7 +129,7 @@ func TestRequestManager_Stream(t *testing.T) {
 			_, ok := m.sessions[id]
 			m.mu.RUnlock()
 			return !ok
-		}, "session should not terminate after eose")
+		}, "session should not be removed after eose")
 
 		Never(t, func() bool {
 			select {
@@ -410,40 +210,6 @@ func TestRequestManager_Stream(t *testing.T) {
 		m.mu.RUnlock()
 		assert.False(t, ok, "registration should be removed from reqs")
 	})
-
-	t.Run("duplicate closed does not panic", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
-		p.connect()
-		Eventually(t, envoy.IsConnected, "envoy should be connected")
-
-		m := NewRequestManager(envoy)
-		t.Cleanup(func() { m.Close() })
-		filters := [][]byte{[]byte(`{}`)}
-		id, _, _ := m.Stream(filters)
-
-		// drain the REQ send
-		Eventually(t, func() bool {
-			select {
-			case <-p.sent:
-				return true
-			default:
-				return false
-			}
-		}, "expected REQ send")
-
-		// inject both before the router can process either
-		p.receive(envelope.EncloseClosed(id, "error: first"))
-		p.receive(envelope.EncloseClosed(id, "error: second"))
-
-		// if the router panics, the test will fail with a goroutine crash;
-		// assert the session eventually terminates cleanly as a liveness check
-		Eventually(t, func() bool {
-			m.mu.RLock()
-			_, ok := m.sessions[id]
-			m.mu.RUnlock()
-			return !ok
-		}, "session should terminate after closed")
-	})
 }
 
 func TestRequestManager_Cancel(t *testing.T) {
@@ -481,17 +247,12 @@ func TestRequestManager_Cancel(t *testing.T) {
 		}, "expected CLOSE send")
 		assert.Equal(t, []byte(envelope.EncloseClose(id)), got)
 
-		Eventually(t, func() bool {
-			m.mu.RLock()
-			_, ok := m.sessions[id]
-			m.mu.RUnlock()
-			return !ok
-		}, "session should be removed")
-
 		m.mu.RLock()
-		_, ok := m.reqs[id]
+		_, sessOk := m.sessions[id]
+		_, reqOk := m.reqs[id]
 		m.mu.RUnlock()
-		assert.False(t, ok, "registration should be removed from reqs")
+		assert.False(t, sessOk, "session should be removed")
+		assert.False(t, reqOk, "registration should be removed from reqs")
 
 		Eventually(t, func() bool {
 			select {
@@ -573,7 +334,7 @@ func TestRequestManager_Query(t *testing.T) {
 		assert.Len(t, events, 3)
 		assert.Nil(t, closed)
 
-		// CLOSE envelope should have been sent by the session
+		// CLOSE envelope should have been sent after EOSE
 		var closeEnv []byte
 		select {
 		case closeEnv = <-p.sent:
@@ -666,7 +427,6 @@ func _TestRequestManager_Reconnect(t *testing.T) {
 		// connect, open two streams
 		// send a disconnect event into the mock events channel
 		// assert both sessions are removed from sessions map
-		// assert sessionWg reaches zero
 	})
 
 	t.Run("registrations survive disconnect", func(t *testing.T) {

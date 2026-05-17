@@ -4,9 +4,7 @@ import (
 	"context"
 	"git.wisehodl.dev/jay/go-honeybee"
 	"git.wisehodl.dev/jay/go-mana-component"
-	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
-	"sync"
 	"testing"
 	"time"
 )
@@ -89,57 +87,6 @@ func (p *mockPool) receive(data []byte) {
 		ID:         p.url,
 		Data:       data,
 		ReceivedAt: time.Now(),
-	}
-}
-
-// Mock request session harness
-
-type mockSessionHarness struct {
-	ctx            context.Context
-	id             string
-	filters        [][]byte
-	req            []byte
-	inbox          chan sessionMessage
-	events         chan ReqEvent
-	closed         chan ReqClosed
-	closedOnce     *sync.Once
-	done           chan struct{}
-	sent           chan []byte
-	send           func([]byte) error
-	preterminate   func()
-	terminatedWith chan terminateReason
-	terminate      func(terminateReason)
-}
-
-func newMockSessionHarness() *mockSessionHarness {
-	ctx := component.MustNew(context.Background(), "prism", "test")
-	filters := [][]byte{[]byte(`{}`)}
-	id := "TESTREQ"
-	sent := make(chan []byte, 2)
-	send := func(data []byte) error {
-		sent <- data
-		return nil
-	}
-	inbox := make(chan sessionMessage, 16)
-	preterminate := func() { close(inbox) }
-	terminatedWith := make(chan terminateReason, 1)
-	terminate := func(r terminateReason) { terminatedWith <- r }
-
-	return &mockSessionHarness{
-		ctx:            ctx,
-		id:             id,
-		filters:        filters,
-		req:            envelope.EncloseReq(id, filters),
-		inbox:          inbox,
-		events:         make(chan ReqEvent, 16),
-		closed:         make(chan ReqClosed, 16),
-		closedOnce:     &sync.Once{},
-		done:           make(chan struct{}),
-		sent:           sent,
-		send:           send,
-		preterminate:   preterminate,
-		terminatedWith: terminatedWith,
-		terminate:      terminate,
 	}
 }
 
