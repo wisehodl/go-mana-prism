@@ -605,42 +605,6 @@ func TestRequestManager_Reconnect(t *testing.T) {
 	})
 }
 
-func TestRequestManager_InboxRouting(t *testing.T) {
-	t.Run("routes event to correct request buffer", func(t *testing.T) {
-		// connect, open two streams (sub ids A and B)
-		// inject an EVENT addressed to sub id A
-		// assert A's events channel receives the message
-		// assert B's events channel receives nothing
-	})
-
-	t.Run("drops event for unknown sub id", func(t *testing.T) {
-		// connect, open a stream
-		// inject an EVENT with a sub id that has no registration
-		// assert no panic, no deadlock, test completes cleanly
-	})
-
-	t.Run("drops unparseable envelope", func(t *testing.T) {
-		// connect, open a stream
-		// inject raw bytes that are not a valid envelope
-		// assert no panic, no deadlock, test completes cleanly
-	})
-
-	t.Run("routes eose to correct session", func(t *testing.T) {
-		// connect, open two streams (sub ids A and B), both with closeOnEOSE = false
-		// inject EOSE for sub id A
-		// assert A's session receives the signal (verify via a side effect, e.g. a counter)
-		// assert B's session does not receive the signal
-	})
-
-	t.Run("routes closed to session and request", func(t *testing.T) {
-		// connect, open a stream
-		// inject a CLOSED envelope with a reason string
-		// assert the session receives the closed signal and terminates
-		// assert request.closed yields a ReqClosed with the correct message
-		// both must receive the message: the session reacts, the caller is informed
-	})
-}
-
 func TestRequestManager_Close(t *testing.T) {
 	t.Run("terminates all sessions without deadlock", func(t *testing.T) {
 		p, envoy := newMockEnvoy(t)
