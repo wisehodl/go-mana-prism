@@ -197,10 +197,31 @@ func TestRequestManager_Session(t *testing.T) {
 	})
 
 	t.Run("terminates on context cancel", func(t *testing.T) {
-		// construct a session, hold its cancel func
-		// call cancel
-		// assert terminate was called with termExternal
-		// this covers the path that Cancel() exercises on the session
+		h := newMockSessionHarness()
+		s := newSession(
+			h.ctx, h.id, h.req, h.eose, h.closed, h.done,
+			h.send, h.terminate, false, nil)
+		go s.run()
+
+		Eventually(t, func() bool {
+			select {
+			case <-h.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected initial send")
+
+		s.Close()
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-h.terminatedWith:
+				return r == termExternal
+			default:
+				return false
+			}
+		}, "expected termExternal after context cancel")
 	})
 
 	t.Run("terminates on closed signal", func(t *testing.T) {
