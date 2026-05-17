@@ -6,7 +6,6 @@ import (
 	"encoding/base32"
 	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
-	"git.wisehodl.dev/jay/go-roots-ws"
 	"log/slog"
 	"sync"
 	"time"
@@ -216,18 +215,29 @@ func newSession(
 		cancel:      cancel,
 	}
 	// create logger if handler is supplied
-	// run main loop
 	return s
 }
 
 func (s *session) run() {
-	var tr terminateReason
-	defer s.terminate(tr)
+	// send initial REQ; goroutine allows done/ctx cancellation to abort the wait
+	sent := make(chan error, 1)
+	go func() { sent <- s.send(s.req) }()
 
-	// send inital req
+	select {
+	case err := <-sent:
+		if err != nil {
+			s.terminate(termSendFailed)
+			return
+		}
+	case <-s.done:
+		s.terminate(termExternal)
+		return
+	case <-s.ctx.Done():
+		s.terminate(termExternal)
+		return
+	}
 
-	// run main loop
-	// switch on done, context, eose, and closed -- terminal paths
+	// TODO: main message loop (eose, closed, done, ctx) -- deferred to later tests
 }
 
 func (s *session) Close() {

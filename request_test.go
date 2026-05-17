@@ -1,6 +1,10 @@
 package prism
 
 import (
+	"context"
+	"git.wisehodl.dev/jay/go-mana-component"
+	"git.wisehodl.dev/jay/go-roots-ws"
+	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
@@ -9,9 +13,36 @@ import (
 // These tests do not go through RequestManager.
 func TestRequestManager_Session(t *testing.T) {
 	t.Run("sends req on start", func(t *testing.T) {
-		// construct a session with a mock send func
-		// run the session
-		// assert the mock send was called with the exact req bytes
+		filters := [][]byte{[]byte(`{}`)}
+		id := "TESTREQ"
+		req := envelope.EncloseReq(id, filters)
+
+		sent := make(chan []byte, 1)
+		send := func(data []byte) error {
+			sent <- data
+			return nil
+		}
+
+		eose := make(chan struct{})
+		closed := make(chan struct{})
+		done := make(chan struct{})
+		terminate := func(terminateReason) {}
+
+		ctx := component.MustNew(context.Background(), "prism", "test")
+		s := newSession(ctx, id, req, eose, closed, done, send, terminate, false, nil)
+		go s.run()
+
+		var got []byte
+		Eventually(t, func() bool {
+			select {
+			case got = <-sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected send")
+
+		assert.Equal(t, []byte(req), got)
 	})
 
 	t.Run("terminates on failed req send", func(t *testing.T) {
