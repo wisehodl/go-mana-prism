@@ -2,53 +2,100 @@ package prism
 
 import (
 	"context"
+	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
+// Helpers
+
+type mockSessionHarness struct {
+	id             string
+	filters        [][]byte
+	req            []byte
+	eose           chan struct{}
+	closed         chan struct{}
+	done           chan struct{}
+	sent           chan []byte
+	send           func([]byte) error
+	terminatedWith chan terminateReason
+	terminate      func(terminateReason)
+}
+
+func newMockSessionHarness() *mockSessionHarness {
+	filters := [][]byte{[]byte(`{}`)}
+	id := "TESTREQ"
+	sent := make(chan []byte, 2)
+	send := func(data []byte) error {
+		sent <- data
+		return nil
+	}
+	terminatedWith := make(chan terminateReason, 1)
+	terminate := func(r terminateReason) { terminatedWith <- r }
+
+	return &mockSessionHarness{
+		id:             id,
+		filters:        filters,
+		req:            envelope.EncloseReq(id, filters),
+		eose:           make(chan struct{}),
+		closed:         make(chan struct{}),
+		done:           make(chan struct{}),
+		sent:           sent,
+		send:           send,
+		terminatedWith: terminatedWith,
+		terminate:      terminate,
+	}
+}
+
+// Tests
+
 // Session tests exercise the session struct in isolation.
 // The session is constructed directly with mock channels and callbacks.
 // These tests do not go through RequestManager.
 func TestRequestManager_Session(t *testing.T) {
 	t.Run("sends req on start", func(t *testing.T) {
-		filters := [][]byte{[]byte(`{}`)}
-		id := "TESTREQ"
-		req := envelope.EncloseReq(id, filters)
-
-		sent := make(chan []byte, 1)
-		send := func(data []byte) error {
-			sent <- data
-			return nil
-		}
-
-		eose := make(chan struct{})
-		closed := make(chan struct{})
-		done := make(chan struct{})
-		terminate := func(terminateReason) {}
+		h := newMockSessionHarness()
 
 		ctx := component.MustNew(context.Background(), "prism", "test")
-		s := newSession(ctx, id, req, eose, closed, done, send, terminate, false, nil)
+		s := newSession(
+			ctx, h.id, h.req, h.eose, h.closed, h.done,
+			h.send, h.terminate, false, nil)
 		go s.run()
 
 		var got []byte
 		Eventually(t, func() bool {
 			select {
-			case got = <-sent:
+			case got = <-h.sent:
 				return true
 			default:
 				return false
 			}
 		}, "expected send")
 
-		assert.Equal(t, []byte(req), got)
+		assert.Equal(t, []byte(h.req), got)
 	})
 
 	t.Run("terminates on failed req send", func(t *testing.T) {
-		// construct a session with a send func that returns an error
-		// run the session
-		// assert terminate was called with termSendFailed
+		h := newMockSessionHarness()
+
+		send := func([]byte) error { return fmt.Errorf("send failed") }
+
+		ctx := component.MustNew(context.Background(), "prism", "test")
+		s := newSession(
+			ctx, h.id, h.req, h.eose, h.closed, h.done,
+			send, h.terminate, false, nil)
+		go s.run()
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-h.terminatedWith:
+				return r == termSendFailed
+			default:
+				return false
+			}
+		}, "expected termSendFailed")
 	})
 
 	t.Run("ignores eose if stream", func(t *testing.T) {
