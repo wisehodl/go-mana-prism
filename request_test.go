@@ -114,7 +114,7 @@ func TestRequestManager_Session(t *testing.T) {
 		Eventually(t, func() bool {
 			select {
 			case r := <-h.terminatedWith:
-				return r == termCloseSent
+				return r == termClosedOnEOSE
 			default:
 				return false
 			}
@@ -585,11 +585,32 @@ func TestRequestManager_Query(t *testing.T) {
 	})
 
 	t.Run("returns empty events and closed on relay closed", func(t *testing.T) {
-		// connect the envoy
-		// in a goroutine: inject a CLOSED envelope before any EVENT
-		// call Query
-		// assert the returned slice is empty
-		// assert closed is non-nil and contains the relay's reason string
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		const reason = "rate-limited: slow down"
+
+		go func() {
+			reqBytes := <-p.sent
+			subID, _, err := envelope.FindReq(reqBytes)
+			if err != nil {
+				t.Errorf("FindReq: %v", err)
+				return
+			}
+			p.receive(envelope.EncloseClosed(subID, reason))
+		}()
+
+		events, closed := m.Query(filters, TestTimeout)
+
+		assert.Empty(t, events)
+		if assert.NotNil(t, closed) {
+			assert.Equal(t, reason, closed.Data)
+		}
 	})
 
 	t.Run("returns partial events on timeout", func(t *testing.T) {

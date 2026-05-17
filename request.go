@@ -85,7 +85,7 @@ type terminateReason int
 
 const (
 	termSendFailed terminateReason = iota
-	termCloseSent
+	termClosedOnEOSE
 	termReceivedClosed
 	termDone
 	termCancelled
@@ -290,7 +290,7 @@ func (m *RequestManager) spawnSession(req *request, query bool) {
 			delete(m.sessions, req.id)
 			m.mu.Unlock()
 			m.sessionWg.Done()
-			if r == termReceivedClosed || r == termCloseSent {
+			if r == termReceivedClosed || r == termClosedOnEOSE {
 				req.deregisterOnce.Do(func() {
 					close(req.buffer)
 					close(req.closed)
@@ -461,7 +461,7 @@ func (s *session) run() {
 		case <-s.eose:
 			if s.closeOnEOSE {
 				s.send(envelope.EncloseClose(s.id))
-				s.terminate(termCloseSent)
+				s.terminate(termClosedOnEOSE)
 				return
 			}
 		case <-s.closed:
