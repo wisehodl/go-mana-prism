@@ -530,8 +530,12 @@ func TestRequestManager_Cancel(t *testing.T) {
 	})
 
 	t.Run("returns error for unknown id", func(t *testing.T) {
-		// call Cancel with an id that was never registered
-		// assert an error is returned
+		_, envoy := newMockEnvoy(t)
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		err := m.Cancel("unknown")
+		assert.Error(t, err)
 	})
 }
 
