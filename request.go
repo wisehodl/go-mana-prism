@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
+	"git.wisehodl.dev/jay/go-roots-ws"
 	"log/slog"
 	"sync"
 	"time"
@@ -237,6 +238,11 @@ func (s *session) run() {
 			s.terminate(termExternal)
 			return
 		case <-s.eose:
+			if s.closeOnEOSE {
+				s.send(envelope.EncloseClose(s.id))
+				s.terminate(termCloseSent)
+				return
+			}
 		}
 	}
 }

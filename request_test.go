@@ -138,10 +138,44 @@ func TestRequestManager_Session(t *testing.T) {
 	})
 
 	t.Run("sends close on eose if query", func(t *testing.T) {
-		// construct a session with closeOnEOSE = true
-		// send a value into the eose channel
-		// assert the mock send was called with a CLOSE envelope for the session id
-		// assert terminate was called with termCloseSent
+		h := newMockSessionHarness()
+		s := newSession(
+			h.ctx, h.id, h.req, h.eose, h.closed, h.done,
+			h.send, h.terminate, true, nil)
+		go s.run()
+
+		// drain initial REQ send
+		Eventually(t, func() bool {
+			select {
+			case <-h.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected initial REQ send")
+
+		h.eose <- struct{}{}
+
+		var got []byte
+		Eventually(t, func() bool {
+			select {
+			case got = <-h.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected CLOSE send")
+
+		assert.Equal(t, []byte(envelope.EncloseClose(h.id)), got)
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-h.terminatedWith:
+				return r == termCloseSent
+			default:
+				return false
+			}
+		}, "expected termCloseSent")
 	})
 
 	t.Run("terminates on done close", func(t *testing.T) {
