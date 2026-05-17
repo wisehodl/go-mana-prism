@@ -214,6 +214,7 @@ func TestRequestManager_Stream(t *testing.T) {
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
 		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
 		id, events, closed := m.Stream(filters)
 
@@ -238,6 +239,7 @@ func TestRequestManager_Stream(t *testing.T) {
 		p, envoy := newMockEnvoy(t)
 
 		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
 		id, events, closed := m.Stream(filters)
 
@@ -261,6 +263,7 @@ func TestRequestManager_Stream(t *testing.T) {
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
 		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
 		id, events, _ := m.Stream(filters)
 
@@ -304,6 +307,7 @@ func TestRequestManager_Stream(t *testing.T) {
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
 		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
 		id, events, closed := m.Stream(filters)
 
@@ -355,6 +359,7 @@ func TestRequestManager_Stream(t *testing.T) {
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
 		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
 		id, events, closed := m.Stream(filters)
 
@@ -411,6 +416,7 @@ func TestRequestManager_Stream(t *testing.T) {
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
 		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
 		id, _, _ := m.Stream(filters)
 
@@ -446,6 +452,7 @@ func TestRequestManager_Cancel(t *testing.T) {
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
 		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
 		id, events, _ := m.Stream(filters)
 
@@ -500,6 +507,7 @@ func TestRequestManager_Cancel(t *testing.T) {
 		// do not connect — no session will be spawned
 
 		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
 		id, events, _ := m.Stream(filters)
 
