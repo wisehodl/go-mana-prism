@@ -208,10 +208,34 @@ func TestRequestManager_Session(t *testing.T) {
 
 func TestRequestManager_Stream(t *testing.T) {
 	t.Run("spawns session and sends req when connected", func(t *testing.T) {
-		// connect the envoy before calling Stream
-		// call Stream with filters
-		// assert the mock send was called with a REQ envelope
-		// assert the generated id appears in the REQ envelope
+		p := newMockPool(t)
+		emb := NewEmbassy(p.ctx, p.plugin, nil)
+		err := emb.Dispatch(p.url)
+		assert.NoError(t, err)
+		envoy := emb.Call(p.url)
+
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		filters := [][]byte{[]byte(`{}`)}
+		id, events, closed := m.Stream(filters)
+
+		assert.NotEmpty(t, id)
+		assert.NotNil(t, events)
+		assert.NotNil(t, closed)
+
+		var got []byte
+		Eventually(t, func() bool {
+			select {
+			case got = <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected REQ send")
+
+		assert.Equal(t, []byte(envelope.EncloseReq(id, filters)), got)
 	})
 
 	t.Run("registers but does not spawn session when disconnected", func(t *testing.T) {

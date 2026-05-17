@@ -138,11 +138,31 @@ func NewRequestManager(e *Envoy) *RequestManager {
 func (m *RequestManager) Stream(
 	filters [][]byte,
 ) (string, <-chan ReqEvent, <-chan ReqClosed) {
-	// generate id
-	// create channels
-	// register request
-	// spawn session if connected
-	return "", nil, nil
+	id := generateID()
+	buffer := make(chan ReqEvent, 64)
+	events := make(chan ReqEvent)
+	closed := make(chan ReqClosed, 1)
+
+	req := &request{
+		id:      id,
+		filters: filters,
+		buffer:  buffer,
+		events:  events,
+		closed:  closed,
+	}
+
+	m.mu.Lock()
+	m.reqs[id] = req
+	go func() {
+		bufferedPipe(buffer, events)
+		close(events)
+	}()
+	if m.envoy.IsConnected() {
+		m.spawnSession(req)
+	}
+	m.mu.Unlock()
+
+	return id, events, closed
 }
 
 func (m *RequestManager) Query(
@@ -160,6 +180,47 @@ func (m *RequestManager) Query(
 func (m *RequestManager) Close() {
 	m.cancel()
 	m.wg.Wait()
+}
+
+func (m *RequestManager) spawnSession(req *request) {
+	eose := make(chan struct{})
+	closed := make(chan struct{})
+
+	sub := &sessionSub{eose: eose, closed: closed}
+	m.inboxSubs[req.id] = sub
+
+	var once sync.Once
+	terminate := func(r terminateReason) {
+		once.Do(func() {
+			m.mu.Lock()
+			close(eose)
+			close(closed)
+			delete(m.inboxSubs, req.id)
+			delete(m.sessions, req.id)
+			m.mu.Unlock()
+			m.sessionWg.Done()
+			if r == termReceivedClosed {
+				req.once.Do(func() {
+					close(req.buffer)
+					close(req.closed)
+				})
+				m.mu.Lock()
+				delete(m.reqs, req.id)
+				m.mu.Unlock()
+			}
+		})
+	}
+
+	req_env := envelope.EncloseReq(req.id, req.filters)
+	sess := newSession(
+		m.ctx, req.id, req_env,
+		eose, closed, m.done,
+		m.envoy.Send, terminate,
+		false, m.handler,
+	)
+	m.sessions[req.id] = sess
+	m.sessionWg.Add(1)
+	go sess.run()
 }
 
 func (m *RequestManager) start() {
