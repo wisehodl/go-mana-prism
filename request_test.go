@@ -225,10 +225,31 @@ func TestRequestManager_Session(t *testing.T) {
 	})
 
 	t.Run("terminates on closed signal", func(t *testing.T) {
-		// construct a session with a closed signal channel
-		// send a value into the closed channel
-		// assert terminate was called with termReceivedClosed
-		// the session does not forward the message; routing is the manager's job
+		h := newMockSessionHarness()
+		s := newSession(
+			h.ctx, h.id, h.req, h.eose, h.closed, h.done,
+			h.send, h.terminate, false, nil)
+		go s.run()
+
+		Eventually(t, func() bool {
+			select {
+			case <-h.sent:
+				return true
+			default:
+				return false
+			}
+		}, "expected initial send")
+
+		h.closed <- struct{}{}
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-h.terminatedWith:
+				return r == termReceivedClosed
+			default:
+				return false
+			}
+		}, "expected termReceivedClosed")
 	})
 }
 

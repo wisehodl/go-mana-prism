@@ -243,6 +243,9 @@ func (s *session) run() {
 				s.terminate(termCloseSent)
 				return
 			}
+		case <-s.closed:
+			s.terminate(termReceivedClosed)
+			return
 		}
 	}
 }
