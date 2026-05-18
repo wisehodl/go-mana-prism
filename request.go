@@ -2,12 +2,13 @@ package prism
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -28,8 +29,7 @@ type ReqClosed struct {
 }
 
 type RequestManager struct {
-	reqs    map[string]*request
-	counter atomic.Uint64
+	reqs map[string]*request
 
 	envoy  *Envoy
 	events <-chan OutboundPoolEvent
@@ -41,6 +41,20 @@ type RequestManager struct {
 	wg      sync.WaitGroup
 	handler slog.Handler
 	logger  *slog.Logger
+}
+
+// ----------------------------------------------------------------------------
+// ID Generation
+// ----------------------------------------------------------------------------
+
+var b32 = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+func generateID() string {
+	b := make([]byte, 5)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("generateID: %v", err))
+	}
+	return b32.EncodeToString(b)
 }
 
 // ----------------------------------------------------------------------------
@@ -137,9 +151,9 @@ func (m *RequestManager) newStream(
 	} else {
 		label := o.label
 		if label == "" {
-			label = "req"
+			label = "REQ"
 		}
-		id = fmt.Sprintf("%s:%d", label, m.counter.Add(1))
+		id = fmt.Sprintf("%s:%s", label, generateID())
 	}
 	buffer := make(chan ReqEvent, 64)
 	closed := make(chan ReqClosed, 1)

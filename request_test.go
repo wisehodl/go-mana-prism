@@ -8,7 +8,7 @@ import (
 )
 
 func TestRequestManager_Options(t *testing.T) {
-	t.Run("default id uses req label and monotonic counter", func(t *testing.T) {
+	t.Run("default id uses REQ label and base32 suffix", func(t *testing.T) {
 		_, envoy := newMockEnvoy(t)
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
@@ -19,8 +19,9 @@ func TestRequestManager_Options(t *testing.T) {
 		idB, _, _, err := m.Stream(filters)
 		assert.NoError(t, err)
 
-		assert.Equal(t, "req:1", idA)
-		assert.Equal(t, "req:2", idB)
+		assert.Regexp(t, `^REQ:[A-Z2-7]{8}$`, idA)
+		assert.Regexp(t, `^REQ:[A-Z2-7]{8}$`, idB)
+		assert.NotEqual(t, idA, idB)
 	})
 
 	t.Run("WithLabel sets prefix", func(t *testing.T) {
@@ -34,8 +35,9 @@ func TestRequestManager_Options(t *testing.T) {
 		idB, _, _, err := m.Stream(filters, WithLabel("profile"))
 		assert.NoError(t, err)
 
-		assert.Equal(t, "feed:1", idA)
-		assert.Equal(t, "profile:2", idB)
+		assert.Regexp(t, `^feed:[A-Z2-7]{8}$`, idA)
+		assert.Regexp(t, `^profile:[A-Z2-7]{8}$`, idB)
+		assert.NotEqual(t, idA, idB)
 	})
 
 	t.Run("WithID uses caller id", func(t *testing.T) {
@@ -71,19 +73,6 @@ func TestRequestManager_Options(t *testing.T) {
 
 		_, _, _, err = m.Stream(filters, WithID("dup"))
 		assert.Error(t, err)
-	})
-
-	t.Run("WithID does not advance counter", func(t *testing.T) {
-		_, envoy := newMockEnvoy(t)
-		m := NewRequestManager(envoy)
-		t.Cleanup(func() { m.Close() })
-
-		filters := [][]byte{[]byte(`{}`)}
-		_, _, _, err := m.Stream(filters, WithID("explicit"))
-		assert.NoError(t, err)
-		id, _, _, err := m.Stream(filters)
-		assert.NoError(t, err)
-		assert.Equal(t, "req:1", id)
 	})
 }
 
