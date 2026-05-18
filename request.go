@@ -2,13 +2,12 @@ package prism
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base32"
 	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,7 +28,8 @@ type ReqClosed struct {
 }
 
 type RequestManager struct {
-	reqs map[string]*request
+	reqs    map[string]*request
+	counter atomic.Uint64
 
 	envoy  *Envoy
 	events <-chan OutboundPoolEvent
@@ -41,6 +41,29 @@ type RequestManager struct {
 	wg      sync.WaitGroup
 	handler slog.Handler
 	logger  *slog.Logger
+}
+
+// ----------------------------------------------------------------------------
+// Options
+// ----------------------------------------------------------------------------
+
+type RequestOption func(*requestOptions)
+
+type requestOptions struct {
+	id    string
+	label string
+}
+
+// WithID sets an explicit subscription ID. Returns an error from Stream or
+// Query if the ID is already in use.
+func WithID(id string) RequestOption {
+	return func(o *requestOptions) { o.id = id }
+}
+
+// WithLabel sets the prefix for the generated subscription ID. The default
+// prefix is "req". The counter is shared across all labels.
+func WithLabel(label string) RequestOption {
+	return func(o *requestOptions) { o.label = label }
 }
 
 type request struct {
@@ -56,21 +79,6 @@ type request struct {
 
 	deregisterOnce sync.Once
 	closedOnce     sync.Once
-}
-
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
-
-var encoder = base32.StdEncoding.WithPadding(base32.NoPadding)
-
-func generateID() string {
-	b := make([]byte, 5)
-	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Sprintf("generateID: %v", err))
-	}
-
-	return encoder.EncodeToString(b)
 }
 
 // ----------------------------------------------------------------------------
@@ -107,16 +115,32 @@ func NewRequestManager(e *Envoy) *RequestManager {
 
 func (m *RequestManager) Stream(
 	filters [][]byte,
-) (string, <-chan ReqEvent, <-chan ReqClosed) {
-	id, events, closed := m.newStream(filters, false)
-	return id, events, closed
+	opts ...RequestOption,
+) (string, <-chan ReqEvent, <-chan ReqClosed, error) {
+	id, events, closed, err := m.newStream(filters, false, opts...)
+	return id, events, closed, err
 }
 
 func (m *RequestManager) newStream(
 	filters [][]byte,
 	isQuery bool,
-) (string, <-chan ReqEvent, <-chan ReqClosed) {
-	id := generateID()
+	opts ...RequestOption,
+) (string, <-chan ReqEvent, <-chan ReqClosed, error) {
+	var o requestOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	var id string
+	if o.id != "" {
+		id = o.id
+	} else {
+		label := o.label
+		if label == "" {
+			label = "req"
+		}
+		id = fmt.Sprintf("%s:%d", label, m.counter.Add(1))
+	}
 	buffer := make(chan ReqEvent, 64)
 	closed := make(chan ReqClosed, 1)
 
@@ -145,24 +169,38 @@ func (m *RequestManager) newStream(
 	}
 
 	m.mu.Lock()
+	if _, exists := m.reqs[id]; exists {
+		m.mu.Unlock()
+		close(buffer)
+		if !isQuery {
+			// drain bufferedPipe goroutine
+			for range events {
+			}
+		}
+		return "", nil, nil, fmt.Errorf("Stream: id %q already in use", id)
+	}
 	m.reqs[id] = req
 	if m.envoy.IsConnected() {
 		m.activate(req)
 	}
 	m.mu.Unlock()
 
-	return id, events, closed
+	return id, events, closed, nil
 }
 
 func (m *RequestManager) Query(
 	filters [][]byte,
 	timeout time.Duration,
-) ([]ReqEvent, *ReqClosed) {
+	opts ...RequestOption,
+) ([]ReqEvent, *ReqClosed, error) {
 	if !m.envoy.IsConnected() {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	id, eventsCh, closedCh := m.newStream(filters, true)
+	id, eventsCh, closedCh, err := m.newStream(filters, true, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	ctx, cancel := context.WithTimeout(m.ctx, timeout)
 	defer cancel()
@@ -172,17 +210,17 @@ func (m *RequestManager) Query(
 		select {
 		case ev, ok := <-eventsCh:
 			if !ok {
-				return result, nil
+				return result, nil, nil
 			}
 			result = append(result, ev)
 		case cl, ok := <-closedCh:
 			if !ok {
-				return result, nil
+				return result, nil, nil
 			}
-			return result, &cl
+			return result, &cl, nil
 		case <-ctx.Done():
 			m.Cancel(id)
-			return result, nil
+			return result, nil, nil
 		}
 	}
 }

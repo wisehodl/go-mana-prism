@@ -7,6 +7,86 @@ import (
 	"time"
 )
 
+func TestRequestManager_Options(t *testing.T) {
+	t.Run("default id uses req label and monotonic counter", func(t *testing.T) {
+		_, envoy := newMockEnvoy(t)
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		idA, _, _, err := m.Stream(filters)
+		assert.NoError(t, err)
+		idB, _, _, err := m.Stream(filters)
+		assert.NoError(t, err)
+
+		assert.Equal(t, "req:1", idA)
+		assert.Equal(t, "req:2", idB)
+	})
+
+	t.Run("WithLabel sets prefix", func(t *testing.T) {
+		_, envoy := newMockEnvoy(t)
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		idA, _, _, err := m.Stream(filters, WithLabel("feed"))
+		assert.NoError(t, err)
+		idB, _, _, err := m.Stream(filters, WithLabel("profile"))
+		assert.NoError(t, err)
+
+		assert.Equal(t, "feed:1", idA)
+		assert.Equal(t, "profile:2", idB)
+	})
+
+	t.Run("WithID uses caller id", func(t *testing.T) {
+		_, envoy := newMockEnvoy(t)
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		id, _, _, err := m.Stream(filters, WithID("my-custom-id"))
+		assert.NoError(t, err)
+		assert.Equal(t, "my-custom-id", id)
+	})
+
+	t.Run("WithID wins over WithLabel", func(t *testing.T) {
+		_, envoy := newMockEnvoy(t)
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		id, _, _, err := m.Stream(filters, WithLabel("feed"), WithID("explicit"))
+		assert.NoError(t, err)
+		assert.Equal(t, "explicit", id)
+	})
+
+	t.Run("WithID returns error on collision", func(t *testing.T) {
+		_, envoy := newMockEnvoy(t)
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		_, _, _, err := m.Stream(filters, WithID("dup"))
+		assert.NoError(t, err)
+
+		_, _, _, err = m.Stream(filters, WithID("dup"))
+		assert.Error(t, err)
+	})
+
+	t.Run("WithID does not advance counter", func(t *testing.T) {
+		_, envoy := newMockEnvoy(t)
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		filters := [][]byte{[]byte(`{}`)}
+		_, _, _, err := m.Stream(filters, WithID("explicit"))
+		assert.NoError(t, err)
+		id, _, _, err := m.Stream(filters)
+		assert.NoError(t, err)
+		assert.Equal(t, "req:1", id)
+	})
+}
+
 func TestRequestManager_Stream(t *testing.T) {
 	t.Run("sends req when connected", func(t *testing.T) {
 		p, envoy := newMockEnvoy(t)
@@ -17,7 +97,8 @@ func TestRequestManager_Stream(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		id, events, closed := m.Stream(filters)
+		id, events, closed, err := m.Stream(filters)
+		assert.NoError(t, err)
 
 		assert.NotEmpty(t, id)
 		assert.NotNil(t, events)
@@ -42,7 +123,8 @@ func TestRequestManager_Stream(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		id, events, closed := m.Stream(filters)
+		id, events, closed, err := m.Stream(filters)
+		assert.NoError(t, err)
 
 		assert.NotEmpty(t, id)
 		assert.NotNil(t, events)
@@ -66,7 +148,8 @@ func TestRequestManager_Stream(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		id, events, _ := m.Stream(filters)
+		id, events, _, err := m.Stream(filters)
+		assert.NoError(t, err)
 
 		// drain the REQ send
 		Eventually(t, func() bool {
@@ -110,7 +193,8 @@ func TestRequestManager_Stream(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		id, events, closed := m.Stream(filters)
+		id, events, closed, err := m.Stream(filters)
+		assert.NoError(t, err)
 
 		// drain the REQ send
 		Eventually(t, func() bool {
@@ -162,7 +246,8 @@ func TestRequestManager_Stream(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		id, events, closed := m.Stream(filters)
+		id, events, closed, err := m.Stream(filters)
+		assert.NoError(t, err)
 
 		// drain the REQ send
 		Eventually(t, func() bool {
@@ -221,7 +306,8 @@ func TestRequestManager_Cancel(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		id, events, _ := m.Stream(filters)
+		id, events, _, streamErr := m.Stream(filters)
+		assert.NoError(t, streamErr)
 
 		// drain the REQ send
 		Eventually(t, func() bool {
@@ -269,7 +355,8 @@ func TestRequestManager_Cancel(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		id, events, _ := m.Stream(filters)
+		id, events, _, streamErr := m.Stream(filters)
+		assert.NoError(t, streamErr)
 
 		err := m.Cancel(id)
 		assert.NoError(t, err)
@@ -327,7 +414,8 @@ func TestRequestManager_Query(t *testing.T) {
 			p.receive(envelope.EncloseEOSE(subID))
 		}()
 
-		events, closed := m.Query(filters, TestTimeout)
+		events, closed, err := m.Query(filters, TestTimeout)
+		assert.NoError(t, err)
 
 		assert.Len(t, events, 3)
 		assert.Nil(t, closed)
@@ -364,7 +452,8 @@ func TestRequestManager_Query(t *testing.T) {
 			p.receive(envelope.EncloseClosed(subID, reason))
 		}()
 
-		events, closed := m.Query(filters, TestTimeout)
+		events, closed, err := m.Query(filters, TestTimeout)
+		assert.NoError(t, err)
 
 		assert.Empty(t, events)
 		if assert.NotNil(t, closed) {
@@ -398,8 +487,9 @@ func TestRequestManager_Query(t *testing.T) {
 		}()
 
 		start := time.Now()
-		events, closed := m.Query(filters, queryTimeout)
+		events, closed, err := m.Query(filters, queryTimeout)
 		elapsed := time.Since(start)
+		assert.NoError(t, err)
 
 		assert.GreaterOrEqual(t, elapsed, queryTimeout)
 		assert.Len(t, events, 2)
@@ -413,7 +503,8 @@ func TestRequestManager_Query(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 
-		events, closed := m.Query([][]byte{[]byte(`{}`)}, TestTimeout)
+		events, closed, err := m.Query([][]byte{[]byte(`{}`)}, TestTimeout)
+		assert.NoError(t, err)
 
 		assert.Nil(t, events)
 		assert.Nil(t, closed)
@@ -429,8 +520,8 @@ func TestRequestManager_Reconnect(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		idA, _, _ := m.Stream(filters)
-		idB, _, _ := m.Stream(filters)
+		idA, _, _, _ := m.Stream(filters)
+		idB, _, _, _ := m.Stream(filters)
 
 		// drain both REQ sends
 		for range 2 {
@@ -463,8 +554,8 @@ func TestRequestManager_Reconnect(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		idA, eventsA, closedA := m.Stream(filters)
-		idB, eventsB, closedB := m.Stream(filters)
+		idA, eventsA, closedA, _ := m.Stream(filters)
+		idB, eventsB, closedB, _ := m.Stream(filters)
 
 		for range 2 {
 			Eventually(t, func() bool {
@@ -539,8 +630,8 @@ func TestRequestManager_Reconnect(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		idA, _, _ := m.Stream(filters)
-		idB, _, _ := m.Stream(filters)
+		idA, _, _, _ := m.Stream(filters)
+		idB, _, _, _ := m.Stream(filters)
 
 		for range 2 {
 			Eventually(t, func() bool {
@@ -599,7 +690,7 @@ func TestRequestManager_Reconnect(t *testing.T) {
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 		filters := [][]byte{[]byte(`{}`)}
-		id, events, _ := m.Stream(filters)
+		id, events, _, _ := m.Stream(filters)
 
 		Eventually(t, func() bool {
 			select {
@@ -650,9 +741,9 @@ func TestRequestManager_Close(t *testing.T) {
 
 		m := NewRequestManager(envoy)
 		filters := [][]byte{[]byte(`{}`)}
-		m.Stream(filters)
-		m.Stream(filters)
-		m.Stream(filters)
+		_, _, _, _ = m.Stream(filters)
+		_, _, _, _ = m.Stream(filters)
+		_, _, _, _ = m.Stream(filters)
 
 		// drain all three REQ sends
 		for range 3 {
@@ -699,8 +790,8 @@ func TestRequestManager_Close(t *testing.T) {
 
 		m := NewRequestManager(envoy)
 		filters := [][]byte{[]byte(`{}`)}
-		_, eventsA, _ := m.Stream(filters)
-		_, eventsB, _ := m.Stream(filters)
+		_, eventsA, _, _ := m.Stream(filters)
+		_, eventsB, _, _ := m.Stream(filters)
 
 		for range 2 {
 			Eventually(t, func() bool {
