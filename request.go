@@ -29,8 +29,7 @@ type ReqClosed struct {
 }
 
 type RequestManager struct {
-	reqs     map[string]*request
-	sessions map[string]*session
+	reqs map[string]*request
 
 	envoy  *Envoy
 	events <-chan OutboundPoolEvent
@@ -45,19 +44,17 @@ type RequestManager struct {
 }
 
 type request struct {
-	id             string
-	filters        [][]byte
-	buffer         chan ReqEvent
-	events         chan ReqEvent
-	closed         chan ReqClosed
-	deregisterOnce sync.Once
-}
-
-type session struct {
 	id      string
-	req     []byte
+	filters [][]byte
+
 	isQuery bool
-	request *request
+	active  bool
+
+	buffer chan ReqEvent
+	events chan ReqEvent
+	closed chan ReqClosed
+
+	once sync.Once
 }
 
 // ----------------------------------------------------------------------------
@@ -84,8 +81,7 @@ func NewRequestManager(e *Envoy) *RequestManager {
 		component.MustExtend(e.Context(), "request_manager"))
 
 	m := &RequestManager{
-		reqs:     make(map[string]*request),
-		sessions: make(map[string]*session),
+		reqs: make(map[string]*request),
 
 		envoy:  e,
 		events: e.SubscribeEvents(),
@@ -122,6 +118,7 @@ func (m *RequestManager) Stream(
 		buffer:  buffer,
 		events:  events,
 		closed:  closed,
+		isQuery: false,
 	}
 
 	m.mu.Lock()
@@ -131,7 +128,7 @@ func (m *RequestManager) Stream(
 		close(events)
 	}()
 	if m.envoy.IsConnected() {
-		m.spawnSession(req, false)
+		m.activateLock(req)
 	}
 	m.mu.Unlock()
 
@@ -155,11 +152,12 @@ func (m *RequestManager) Query(
 		filters: filters,
 		buffer:  eventsCh,
 		closed:  closedCh,
+		isQuery: true,
 	}
 
 	m.mu.Lock()
 	m.reqs[id] = req
-	m.spawnSession(req, true)
+	m.activateLock(req)
 	m.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(m.ctx, timeout)
@@ -193,12 +191,12 @@ func (m *RequestManager) Cancel(id string) error {
 		return fmt.Errorf("Cancel: unknown id %q", id)
 	}
 
-	if _, ok := m.sessions[id]; ok {
+	if req.active {
 		go m.envoy.Send(envelope.EncloseClose(id))
-		delete(m.sessions, id)
+		req.active = false
 	}
 
-	req.deregisterOnce.Do(func() {
+	req.once.Do(func() {
 		close(req.buffer)
 		close(req.closed)
 	})
@@ -215,54 +213,29 @@ func (m *RequestManager) Close() {
 	defer m.mu.Unlock()
 
 	for id, req := range m.reqs {
-		if _, ok := m.sessions[id]; ok {
+		if req.active {
 			go m.envoy.Send(envelope.EncloseClose(id))
 		}
-		req.deregisterOnce.Do(func() {
+		req.once.Do(func() {
 			close(req.buffer)
 			close(req.closed)
 		})
 		delete(m.reqs, id)
 	}
-	for id := range m.sessions {
-		delete(m.sessions, id)
-	}
 }
 
-func (m *RequestManager) spawnSession(req *request, query bool) {
-	sess := &session{
-		id:      req.id,
-		req:     envelope.EncloseReq(req.id, req.filters),
-		isQuery: query,
-		request: req,
-	}
-	m.sessions[req.id] = sess
-	go m.envoy.Send(sess.req)
+func (m *RequestManager) activateLock(req *request) {
+	req.active = true
+	go m.envoy.Send(envelope.EncloseReq(req.id, req.filters))
 }
 
-func (m *RequestManager) deregister(req *request) {
-	req.deregisterOnce.Do(func() {
+func (m *RequestManager) removeLock(req *request) {
+	req.active = false
+	req.once.Do(func() {
 		close(req.buffer)
 		close(req.closed)
 	})
 	delete(m.reqs, req.id)
-	delete(m.sessions, req.id)
-}
-
-func (m *RequestManager) start() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, req := range m.reqs {
-		m.spawnSession(req, false)
-	}
-}
-
-func (m *RequestManager) stop() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id := range m.sessions {
-		delete(m.sessions, id)
-	}
 }
 
 func (m *RequestManager) handleEvents() {
@@ -276,12 +249,20 @@ func (m *RequestManager) handleEvents() {
 			if !ok {
 				return
 			}
+			m.mu.Lock()
 			switch ev.Kind {
 			case EventConnected:
-				m.start()
+				for _, req := range m.reqs {
+					if !req.isQuery {
+						m.activateLock(req)
+					}
+				}
 			case EventDisconnected:
-				m.stop()
+				for _, req := range m.reqs {
+					req.active = false
+				}
 			}
+			m.mu.Unlock()
 		}
 	}
 }
@@ -332,13 +313,13 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 			return
 		}
 		m.mu.Lock()
-		sess, ok := m.sessions[subID]
+		req, ok := m.reqs[subID]
 		if !ok {
 			m.mu.Unlock()
 			return
 		}
-		if sess.isQuery {
-			m.deregister(sess.request)
+		if req.active && req.isQuery {
+			m.removeLock(req)
 			go m.envoy.Send(envelope.EncloseClose(subID))
 		}
 		m.mu.Unlock()
@@ -359,7 +340,7 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 			ReceivedAt: msg.ReceivedAt,
 			Data:       message,
 		}
-		m.deregister(req)
+		m.removeLock(req)
 		m.mu.Unlock()
 	}
 }

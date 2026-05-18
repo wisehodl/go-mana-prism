@@ -8,7 +8,7 @@ import (
 )
 
 func TestRequestManager_Stream(t *testing.T) {
-	t.Run("spawns session and sends req when connected", func(t *testing.T) {
+	t.Run("sends req when connected", func(t *testing.T) {
 		p, envoy := newMockEnvoy(t)
 
 		p.connect()
@@ -36,7 +36,7 @@ func TestRequestManager_Stream(t *testing.T) {
 		assert.Equal(t, []byte(envelope.EncloseReq(id, filters)), got)
 	})
 
-	t.Run("registers but does not spawn session when disconnected", func(t *testing.T) {
+	t.Run("does not send req when disconnected", func(t *testing.T) {
 		p, envoy := newMockEnvoy(t)
 
 		m := NewRequestManager(envoy)
@@ -126,10 +126,10 @@ func TestRequestManager_Stream(t *testing.T) {
 
 		Never(t, func() bool {
 			m.mu.RLock()
-			_, ok := m.sessions[id]
+			req, ok := m.reqs[id]
 			m.mu.RUnlock()
-			return !ok
-		}, "session should not be removed after eose")
+			return !ok || !req.active
+		}, "request should remain registered and active after eose for stream")
 
 		Never(t, func() bool {
 			select {
@@ -213,7 +213,7 @@ func TestRequestManager_Stream(t *testing.T) {
 }
 
 func TestRequestManager_Cancel(t *testing.T) {
-	t.Run("sends close, terminates session, deregisters", func(t *testing.T) {
+	t.Run("sends close and deregisters", func(t *testing.T) {
 		p, envoy := newMockEnvoy(t)
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
@@ -248,10 +248,8 @@ func TestRequestManager_Cancel(t *testing.T) {
 		assert.Equal(t, []byte(envelope.EncloseClose(id)), got)
 
 		m.mu.RLock()
-		_, sessOk := m.sessions[id]
 		_, reqOk := m.reqs[id]
 		m.mu.RUnlock()
-		assert.False(t, sessOk, "session should be removed")
 		assert.False(t, reqOk, "registration should be removed from reqs")
 
 		Eventually(t, func() bool {
@@ -264,9 +262,9 @@ func TestRequestManager_Cancel(t *testing.T) {
 		}, "events channel should close after cancel")
 	})
 
-	t.Run("deregisters when no session is active", func(t *testing.T) {
+	t.Run("deregisters when inactive", func(t *testing.T) {
 		_, envoy := newMockEnvoy(t)
-		// do not connect — no session will be spawned
+		// do not connect — request will not be active
 
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
@@ -422,11 +420,39 @@ func TestRequestManager_Query(t *testing.T) {
 	})
 }
 
-func _TestRequestManager_Reconnect(t *testing.T) {
-	t.Run("sessions terminate on disconnect", func(t *testing.T) {
-		// connect, open two streams
-		// send a disconnect event into the mock events channel
-		// assert both sessions are removed from sessions map
+func TestRequestManager_Reconnect(t *testing.T) {
+	t.Run("requests deactivate on disconnect", func(t *testing.T) {
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+		filters := [][]byte{[]byte(`{}`)}
+		idA, _, _ := m.Stream(filters)
+		idB, _, _ := m.Stream(filters)
+
+		// drain both REQ sends
+		for range 2 {
+			Eventually(t, func() bool {
+				select {
+				case <-p.sent:
+					return true
+				default:
+					return false
+				}
+			}, "expected REQ send")
+		}
+
+		p.disconnect()
+
+		Eventually(t, func() bool {
+			m.mu.RLock()
+			defer m.mu.RUnlock()
+			reqA, okA := m.reqs[idA]
+			reqB, okB := m.reqs[idB]
+			return okA && okB && !reqA.active && !reqB.active
+		}, "both requests should be inactive after disconnect")
 	})
 
 	t.Run("registrations survive disconnect", func(t *testing.T) {
@@ -454,7 +480,7 @@ func _TestRequestManager_Reconnect(t *testing.T) {
 }
 
 func TestRequestManager_Close(t *testing.T) {
-	t.Run("terminates all sessions without deadlock", func(t *testing.T) {
+	t.Run("deactivates all requests without deadlock", func(t *testing.T) {
 		p, envoy := newMockEnvoy(t)
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
@@ -493,9 +519,14 @@ func TestRequestManager_Close(t *testing.T) {
 		}, "Close should return without deadlock")
 
 		m.mu.RLock()
-		count := len(m.sessions)
+		activeCount := 0
+		for _, req := range m.reqs {
+			if req.active {
+				activeCount++
+			}
+		}
 		m.mu.RUnlock()
-		assert.Equal(t, 0, count, "all sessions should be terminated")
+		assert.Equal(t, 0, activeCount, "all requests should be inactive after close")
 	})
 
 	t.Run("deregisters all requests on close", func(t *testing.T) {
