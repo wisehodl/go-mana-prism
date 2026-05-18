@@ -3,7 +3,7 @@ package prism
 import (
 	"context"
 	"fmt"
-	"git.wisehodl.dev/jay/go-honeybee"
+	honeybee "git.wisehodl.dev/jay/go-honeybee/outbound"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"log/slog"
@@ -19,7 +19,7 @@ type EmbassyPlugin struct {
 	Connect func(url string) error
 	Remove  func(url string) error
 	Send    func(url string, data []byte) error
-	Events  <-chan honeybee.OutboundPoolEvent
+	Events  <-chan honeybee.PoolEvent
 	Inbox   <-chan honeybee.InboxMessage
 }
 
@@ -31,11 +31,11 @@ const (
 	EventEmbassyUnknown
 )
 
-func mapEmbassyEvent(kind honeybee.OutboundPoolEventKind) EmbassyEventKind {
+func mapEmbassyEvent(kind honeybee.PoolEventKind) EmbassyEventKind {
 	switch kind {
-	case honeybee.OutboundEventConnected:
+	case honeybee.EventConnected:
 		return EventConnected
-	case honeybee.OutboundEventDisconnected:
+	case honeybee.EventDisconnected:
 		return EventDisconnected
 	default:
 		return EventEmbassyUnknown

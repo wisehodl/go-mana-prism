@@ -1,7 +1,7 @@
 package prism
 
 import (
-	"git.wisehodl.dev/jay/go-honeybee"
+	honeybee "git.wisehodl.dev/jay/go-honeybee/outbound"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
 	"sync/atomic"
@@ -40,10 +40,10 @@ func TestEmbassy_Dispatch(t *testing.T) {
 		close(inboxDone)
 	}()
 
-	p.events <- honeybee.OutboundPoolEvent{
-		ID: p.url, Kind: honeybee.OutboundEventConnected, At: time.Now()}
-	p.events <- honeybee.OutboundPoolEvent{
-		ID: "wss://other", Kind: honeybee.OutboundEventConnected, At: time.Now()}
+	p.events <- honeybee.PoolEvent{
+		ID: p.url, Kind: honeybee.EventConnected, At: time.Now()}
+	p.events <- honeybee.PoolEvent{
+		ID: "wss://other", Kind: honeybee.EventConnected, At: time.Now()}
 	p.inbox <- honeybee.InboxMessage{
 		ID:         p.url,
 		Data:       envelope.EncloseEvent([]byte("{}")),

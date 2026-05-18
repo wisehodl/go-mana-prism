@@ -2,7 +2,7 @@ package prism
 
 import (
 	"context"
-	"git.wisehodl.dev/jay/go-honeybee"
+	honeybee "git.wisehodl.dev/jay/go-honeybee/outbound"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"github.com/stretchr/testify/assert"
 	"testing"
@@ -33,7 +33,7 @@ type mockPool struct {
 	url     string
 	added   chan struct{}
 	removed chan struct{}
-	events  chan honeybee.OutboundPoolEvent
+	events  chan honeybee.PoolEvent
 	inbox   chan honeybee.InboxMessage
 	sent    chan []byte
 }
@@ -48,7 +48,7 @@ func newMockPool(t *testing.T) *mockPool {
 
 	added := make(chan struct{})
 	removed := make(chan struct{})
-	events := make(chan honeybee.OutboundPoolEvent, 16)
+	events := make(chan honeybee.PoolEvent, 16)
 	inbox := make(chan honeybee.InboxMessage, 16)
 	sent := make(chan []byte, 16)
 
@@ -73,13 +73,13 @@ func newMockPool(t *testing.T) *mockPool {
 }
 
 func (p *mockPool) connect() {
-	p.events <- honeybee.OutboundPoolEvent{
-		ID: p.url, Kind: honeybee.OutboundEventConnected, At: time.Now()}
+	p.events <- honeybee.PoolEvent{
+		ID: p.url, Kind: honeybee.EventConnected, At: time.Now()}
 }
 
 func (p *mockPool) disconnect() {
-	p.events <- honeybee.OutboundPoolEvent{
-		ID: p.url, Kind: honeybee.OutboundEventDisconnected, At: time.Now()}
+	p.events <- honeybee.PoolEvent{
+		ID: p.url, Kind: honeybee.EventDisconnected, At: time.Now()}
 }
 
 func (p *mockPool) receive(data []byte) {
