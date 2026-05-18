@@ -22,11 +22,21 @@ func TestEnvoy_Dismiss(t *testing.T) {
 	}
 
 	envoy := newEnvoy(ctx, url, terminate, nil, nil, nil, nil)
+
+	eventSub := envoy.SubscribeEvents()
+	inboxSub := envoy.SubscribeInbox([]string{"A", "B"})
+
 	envoy.Dismiss()
 
 	mu.RLock()
 	defer mu.RUnlock()
 	assert.True(t, terminated)
+
+	_, ok := <-eventSub
+	assert.False(t, ok)
+
+	_, ok = <-inboxSub
+	assert.False(t, ok)
 }
 
 func TestEnvoy_Send(t *testing.T) {
