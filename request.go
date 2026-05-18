@@ -192,10 +192,6 @@ func (m *RequestManager) Query(
 	timeout time.Duration,
 	opts ...RequestOption,
 ) ([]ReqEvent, *ReqClosed, error) {
-	if !m.envoy.IsConnected() {
-		return nil, nil, nil
-	}
-
 	id, eventsCh, closedCh, err := m.newStream(filters, true, opts...)
 	if err != nil {
 		return nil, nil, err
@@ -295,9 +291,7 @@ func (m *RequestManager) handleEvents() {
 			switch ev.Kind {
 			case EventConnected:
 				for _, req := range m.reqs {
-					if !req.isQuery {
-						m.activate(req)
-					}
+					m.activate(req)
 				}
 			case EventDisconnected:
 				for _, req := range m.reqs {

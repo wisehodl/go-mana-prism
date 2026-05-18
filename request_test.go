@@ -485,17 +485,40 @@ func TestRequestManager_Query(t *testing.T) {
 		assert.Nil(t, closed)
 	})
 
-	t.Run("returns nil nil when disconnected", func(t *testing.T) {
-		_, envoy := newMockEnvoy(t)
-		// do not connect
+	t.Run("connects within timeout and returns events", func(t *testing.T) {
+		p, envoy := newMockEnvoy(t)
+		// do NOT connect
 
 		m := NewRequestManager(envoy)
 		t.Cleanup(func() { m.Close() })
 
-		events, closed, err := m.Query([][]byte{[]byte(`{}`)}, TestTimeout)
-		assert.NoError(t, err)
+		filters := [][]byte{[]byte(`{}`)}
+		eventData := []byte(`{"id":"abc"}`)
 
-		assert.Nil(t, events)
+		go func() {
+			// wait to connect
+			time.Sleep(50 * time.Millisecond)
+			p.connect()
+
+			// listen for REQ on pool side to extract subscription id
+			reqBytes := <-p.sent
+			subID, _, err := envelope.FindReq(reqBytes)
+			if err != nil {
+				t.Errorf("FindReq: %v", err)
+				return
+			}
+
+			// send event and eose
+			p.receive(envelope.EncloseSubscriptionEvent(subID, eventData))
+			p.receive(envelope.EncloseEOSE(subID))
+		}()
+
+		// start the query while the peer is disconnected
+		// because it connects within the timeout, the query should still
+		// return events
+		events, closed, err := m.Query(filters, TestTimeout)
+		assert.NoError(t, err)
+		assert.Len(t, events, 1)
 		assert.Nil(t, closed)
 	})
 }
