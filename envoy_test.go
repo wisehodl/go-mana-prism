@@ -21,7 +21,7 @@ func TestEnvoy_Dismiss(t *testing.T) {
 		terminated = true
 	}
 
-	envoy := newEnvoy(ctx, url, terminate, nil, nil, nil, nil)
+	envoy := newEnvoy(ctx, url, terminate, nil, nil, nil, nil, nil)
 
 	eventSub := envoy.SubscribeEvents()
 	inboxSub := envoy.SubscribeInbox([]string{"A", "B"})
@@ -48,7 +48,7 @@ func TestEnvoy_Send(t *testing.T) {
 		return nil
 	}
 
-	envoy := newEnvoy(ctx, url, nil, send, nil, nil, nil)
+	envoy := newEnvoy(ctx, url, nil, send, nil, nil, nil, nil)
 	envoy.Send([]byte("hello"))
 
 	Eventually(t, func() bool {
@@ -62,7 +62,7 @@ func TestEnvoy_IsConnected(t *testing.T) {
 	url := "wss://test"
 	events := make(chan OutboundPoolEvent)
 
-	envoy := newEnvoy(ctx, url, nil, nil, events, nil, nil)
+	envoy := newEnvoy(ctx, url, nil, nil, events, nil, nil, nil)
 	eventSub := envoy.SubscribeEvents()
 
 	gotEvents := []OutboundPoolEvent{}
@@ -88,7 +88,7 @@ func TestEnvoy_Events(t *testing.T) {
 	url := "wss://test"
 	events := make(chan OutboundPoolEvent)
 
-	envoy := newEnvoy(ctx, url, nil, nil, events, nil, nil)
+	envoy := newEnvoy(ctx, url, nil, nil, events, nil, nil, nil)
 	eventSub := envoy.SubscribeEvents()
 
 	gotEvents := []OutboundPoolEvent{}
@@ -120,7 +120,7 @@ func TestEnvoy_Inbox(t *testing.T) {
 	url := "wss://test"
 	inbox := make(chan InboxMessage)
 
-	envoy := newEnvoy(ctx, url, nil, nil, nil, inbox, nil)
+	envoy := newEnvoy(ctx, url, nil, nil, nil, inbox, nil, nil)
 	inboxSub := envoy.SubscribeInbox([]string{"EVENT"})
 
 	gotInbox := []InboxMessage{}

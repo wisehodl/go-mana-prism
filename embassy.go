@@ -5,6 +5,7 @@ import (
 	"fmt"
 	honeybee "git.wisehodl.dev/jay/go-honeybee/outbound"
 	"git.wisehodl.dev/jay/go-mana-component"
+	"git.wisehodl.dev/jay/go-mana-prism/observer"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"log/slog"
 	"sync"
@@ -54,50 +55,58 @@ type InboxMessage struct {
 	ReceivedAt time.Time
 }
 
-type Embassy struct {
-	pool      EmbassyPlugin
-	envoys    map[string]*Envoy
-	eventSubs map[string]chan<- OutboundPoolEvent
-	inboxSubs map[string]chan<- InboxMessage
+// ----------------------------------------------------------------------------
+// Options
+// ----------------------------------------------------------------------------
 
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.RWMutex
-	wg      sync.WaitGroup
-	handler slog.Handler
-	logger  *slog.Logger
+type EmbassyConfig struct {
+	handler  slog.Handler
+	observer observer.Observer
 }
 
-type Envoy struct {
-	url               string
-	connected         bool
-	terminate         func()
-	queue             chan []byte
-	send              func(data []byte) error
-	events            <-chan OutboundPoolEvent
-	inbox             <-chan InboxMessage
-	eventSubs         []chan<- OutboundPoolEvent
-	labelledInboxSubs map[string][]chan<- InboxMessage
-	inboxSubs         []chan<- InboxMessage
+type EmbassyOption func(*EmbassyConfig)
 
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.RWMutex
-	wg      sync.WaitGroup
-	handler slog.Handler
-	logger  *slog.Logger
+func WithEmbassyHandler(h slog.Handler) EmbassyOption {
+	return func(c *EmbassyConfig) {
+		c.handler = h
+	}
+}
+
+func WithEmbassyObserver(o observer.Observer) EmbassyOption {
+	return func(c *EmbassyConfig) {
+		c.observer = o
+	}
 }
 
 // ----------------------------------------------------------------------------
 // Embassy
 // ----------------------------------------------------------------------------
 
+type Embassy struct {
+	pool      EmbassyPlugin
+	envoys    map[string]*Envoy
+	eventSubs map[string]chan<- OutboundPoolEvent
+	inboxSubs map[string]chan<- InboxMessage
+
+	ctx      context.Context
+	cancel   context.CancelFunc
+	mu       sync.RWMutex
+	wg       sync.WaitGroup
+	observer observer.Observer
+	handler  slog.Handler
+	logger   *slog.Logger
+}
+
 func NewEmbassy(
 	ctx context.Context,
 	pool EmbassyPlugin,
-	handler slog.Handler,
+	opts ...EmbassyOption,
 ) *Embassy {
 	ctx, cancel := context.WithCancel(component.MustNew(ctx, "prism", "embassy"))
+	cfg := EmbassyConfig{observer: observer.NullObserver{}}
+	for _, o := range opts {
+		o(&cfg)
+	}
 
 	e := &Embassy{
 		pool:      pool,
@@ -106,12 +115,13 @@ func NewEmbassy(
 		inboxSubs: make(map[string]chan<- InboxMessage),
 		ctx:       ctx,
 		cancel:    cancel,
+		observer:  cfg.observer,
+		handler:   cfg.handler,
 	}
 
-	if handler != nil {
+	if e.handler != nil {
 		comp := component.FromContext(ctx)
-		e.handler = handler
-		e.logger = slog.New(handler).With(slog.Any("component", comp))
+		e.logger = slog.New(cfg.handler).With(slog.Any("component", comp))
 	}
 
 	e.wg.Add(2)
@@ -144,7 +154,7 @@ func (e *Embassy) Dispatch(url string) error {
 	events := e.subscribeEventsLock(url)
 	inbox := e.subscribeInboxLock(url)
 
-	e.envoys[url] = newEnvoy(e.ctx, url, terminate, send, events, inbox, e.handler)
+	e.envoys[url] = newEnvoy(e.ctx, url, terminate, send, events, inbox, e.observer, e.handler)
 
 	e.mu.Unlock()
 
@@ -301,6 +311,27 @@ func (e *Embassy) routeInbox() {
 // Envoy
 // ----------------------------------------------------------------------------
 
+type Envoy struct {
+	url               string
+	connected         bool
+	terminate         func()
+	queue             chan []byte
+	send              func(data []byte) error
+	events            <-chan OutboundPoolEvent
+	inbox             <-chan InboxMessage
+	eventSubs         []chan<- OutboundPoolEvent
+	labelledInboxSubs map[string][]chan<- InboxMessage
+	inboxSubs         []chan<- InboxMessage
+
+	ctx      context.Context
+	cancel   context.CancelFunc
+	mu       sync.RWMutex
+	wg       sync.WaitGroup
+	observer observer.Observer
+	handler  slog.Handler
+	logger   *slog.Logger
+}
+
 func newEnvoy(
 	ctx context.Context,
 	url string,
@@ -308,6 +339,7 @@ func newEnvoy(
 	send func(data []byte) error,
 	events <-chan OutboundPoolEvent,
 	inbox <-chan InboxMessage,
+	observer observer.Observer,
 	handler slog.Handler,
 ) *Envoy {
 	ctx, cancel := context.WithCancel(component.MustExtend(ctx, "envoy"))
@@ -322,11 +354,12 @@ func newEnvoy(
 		labelledInboxSubs: make(map[string][]chan<- InboxMessage),
 		ctx:               ctx,
 		cancel:            cancel,
+		observer:          observer,
+		handler:           handler,
 	}
 
 	if handler != nil {
 		comp := component.FromContext(ctx)
-		e.handler = handler
 		e.logger = slog.New(handler).With(slog.Any("component", comp)).With("peer", url)
 	}
 
@@ -349,6 +382,10 @@ func (e *Envoy) Context() context.Context {
 
 func (e *Envoy) Handler() slog.Handler {
 	return e.handler
+}
+
+func (e *Envoy) Observer() observer.Observer {
+	return e.observer
 }
 
 func (e *Envoy) Dismiss() {

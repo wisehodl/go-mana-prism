@@ -12,7 +12,7 @@ import (
 func TestEmbassy_Dispatch(t *testing.T) {
 	p := newMockPool(t)
 
-	embassy := NewEmbassy(p.ctx, p.plugin, nil)
+	embassy := NewEmbassy(p.ctx, p.plugin)
 	embassy.Dispatch(p.url)
 	envoy := embassy.Call(p.url)
 	assert.NotNil(t, envoy)

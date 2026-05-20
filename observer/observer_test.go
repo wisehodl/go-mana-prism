@@ -1,15 +1,15 @@
-package peerstat
+package observer
 
 import (
 	"testing"
 )
 
-func TestNoopSink(t *testing.T) {
-	// Test that NoopSink implements the Sink interface
-	var _ Sink = NoopSink{}
+func TestNullObserver(t *testing.T) {
+	// Test that NullObserver implements the Observer interface
+	var _ Observer = NullObserver{}
 
 	// Test that calling Record doesn't panic or crash
-	sink := NoopSink{}
+	sink := NullObserver{}
 	sink.Record("peer1", "test event")
 	sink.Record("", nil)
 

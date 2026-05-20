@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
+	"git.wisehodl.dev/jay/go-mana-prism/observer"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"log/slog"
 	"sync"
@@ -26,21 +27,6 @@ type ReqClosed struct {
 	PeerID     string
 	ReceivedAt time.Time
 	Data       string
-}
-
-type RequestManager struct {
-	reqs map[string]*request
-
-	envoy  *Envoy
-	events <-chan OutboundPoolEvent
-	inbox  <-chan InboxMessage
-
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.RWMutex
-	wg      sync.WaitGroup
-	handler slog.Handler
-	logger  *slog.Logger
 }
 
 // ----------------------------------------------------------------------------
@@ -80,6 +66,26 @@ func WithLabel(label string) RequestOption {
 	return func(o *requestOptions) { o.label = label }
 }
 
+// ----------------------------------------------------------------------------
+// Request Manager
+// ----------------------------------------------------------------------------
+
+type RequestManager struct {
+	reqs map[string]*request
+
+	envoy  *Envoy
+	events <-chan OutboundPoolEvent
+	inbox  <-chan InboxMessage
+
+	ctx      context.Context
+	cancel   context.CancelFunc
+	mu       sync.RWMutex
+	wg       sync.WaitGroup
+	observer observer.Observer
+	handler  slog.Handler
+	logger   *slog.Logger
+}
+
 type request struct {
 	id      string
 	filters [][]byte
@@ -95,10 +101,6 @@ type request struct {
 	closedOnce     sync.Once
 }
 
-// ----------------------------------------------------------------------------
-// Request Manager
-// ----------------------------------------------------------------------------
-
 func NewRequestManager(e *Envoy) *RequestManager {
 	ctx, cancel := context.WithCancel(
 		component.MustExtend(e.Context(), "request_manager"))
@@ -110,14 +112,15 @@ func NewRequestManager(e *Envoy) *RequestManager {
 		events: e.SubscribeEvents(),
 		inbox:  e.SubscribeInbox([]string{"EVENT", "EOSE", "CLOSED"}),
 
-		ctx:    ctx,
-		cancel: cancel,
+		ctx:      ctx,
+		cancel:   cancel,
+		observer: e.Observer(),
+		handler:  e.Handler(),
 	}
 
-	if h := e.Handler(); h != nil {
+	if m.handler != nil {
 		comp := component.FromContext(ctx)
-		m.handler = h
-		m.logger = slog.New(h).With(slog.Any("component", comp))
+		m.logger = slog.New(m.handler).With(slog.Any("component", comp))
 	}
 
 	m.wg.Add(2)
