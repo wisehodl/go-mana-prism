@@ -380,6 +380,10 @@ func (e *Envoy) Context() context.Context {
 	return e.ctx
 }
 
+func (e *Envoy) PeerID() string {
+	return e.url
+}
+
 func (e *Envoy) Handler() slog.Handler {
 	return e.handler
 }
