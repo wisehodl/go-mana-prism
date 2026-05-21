@@ -2,7 +2,7 @@ package prism
 
 import (
 	"context"
-	honeybee "git.wisehodl.dev/jay/go-honeybee/outbound"
+	"git.wisehodl.dev/jay/go-honeybee"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"github.com/stretchr/testify/assert"
 	"testing"

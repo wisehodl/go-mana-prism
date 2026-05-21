@@ -3,7 +3,7 @@ module git.wisehodl.dev/jay/go-mana-prism
 go 1.25.0
 
 require (
-	git.wisehodl.dev/jay/go-honeybee v0.3.1
+	git.wisehodl.dev/jay/go-honeybee v0.4.0
 	git.wisehodl.dev/jay/go-mana-component v0.1.0
 	git.wisehodl.dev/jay/go-roots-ws v0.1.0
 	github.com/stretchr/testify v1.11.1

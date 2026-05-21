@@ -1,7 +1,7 @@
 package prism
 
 import (
-	honeybee "git.wisehodl.dev/jay/go-honeybee/outbound"
+	"git.wisehodl.dev/jay/go-honeybee"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
 	"sync/atomic"

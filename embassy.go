@@ -3,7 +3,7 @@ package prism
 import (
 	"context"
 	"fmt"
-	honeybee "git.wisehodl.dev/jay/go-honeybee/outbound"
+	"git.wisehodl.dev/jay/go-honeybee"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"git.wisehodl.dev/jay/go-mana-prism/observer"
 	"git.wisehodl.dev/jay/go-roots-ws"
