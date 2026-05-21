@@ -355,12 +355,12 @@ func newEnvoy(
 		ctx:               ctx,
 		cancel:            cancel,
 		observer:          observer,
-		handler:           handler,
 	}
 
 	if handler != nil {
 		comp := component.FromContext(ctx)
-		e.logger = slog.New(handler).With(slog.Any("component", comp)).With("peer", url)
+		e.handler = handler.WithAttrs([]slog.Attr{slog.String("peer", url)})
+		e.logger = slog.New(e.handler).With(slog.Any("component", comp))
 	}
 
 	e.wg.Add(2)
