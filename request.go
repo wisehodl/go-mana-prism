@@ -262,6 +262,9 @@ func (m *RequestManager) Query(
 			// query timed out
 			m.observer.Record(m.envoy.PeerID(),
 				MissedEOSE{SubID: id, At: time.Now()})
+			if m.logger != nil {
+				m.logger.Warn("missed eose", "req", id)
+			}
 			m.Cancel(id)
 			return result, nil, nil
 		}
@@ -278,7 +281,18 @@ func (m *RequestManager) Cancel(id string) error {
 	}
 
 	if req.active {
-		go m.envoy.Send(envelope.EncloseClose(id))
+		go func() {
+			err := m.envoy.Send(envelope.EncloseClose(id))
+			if err != nil {
+				if m.logger != nil {
+					m.logger.Warn("close send failed", "req", req.id, "error", err)
+				}
+				return
+			}
+			if m.logger != nil {
+				m.logger.Debug("close sent", "req", req.id)
+			}
+		}()
 		req.active = false
 	}
 
@@ -317,10 +331,16 @@ func (m *RequestManager) activate(req *request) {
 		if err != nil {
 			m.observer.Record(m.envoy.PeerID(),
 				ReqSendFailed{SubID: req.id, Err: err, At: time.Now()})
+			if m.logger != nil {
+				m.logger.Warn("req send failed", "req", req.id, "error", err)
+			}
 			return
 		}
 		m.observer.Record(m.envoy.PeerID(),
 			ReqDispatched{SubID: req.id, DispatchedAt: time.Now()})
+		if m.logger != nil {
+			m.logger.Debug("req sent", "req", req.id)
+		}
 	}()
 }
 
@@ -450,7 +470,18 @@ func (m *RequestManager) routeEOSE(msg InboxMessage) {
 		req.active = false
 		close(req.buffer)
 		delete(m.reqs, req.id)
-		go m.envoy.Send(envelope.EncloseClose(subID))
+		go func() {
+			err := m.envoy.Send(envelope.EncloseClose(subID))
+			if err != nil {
+				if m.logger != nil {
+					m.logger.Warn("close send failed", "req", req.id, "error", err)
+				}
+				return
+			}
+			if m.logger != nil {
+				m.logger.Debug("close sent", "req", req.id)
+			}
+		}()
 	}
 }
 
@@ -473,6 +504,9 @@ func (m *RequestManager) routeClosed(msg InboxMessage) {
 			ReceivedAt: receivedAt,
 			Message:    message,
 		})
+	if m.logger != nil {
+		m.logger.Warn("req closed by peer", "req", req.id, "message", message)
+	}
 	req.closedOnce.Do(func() {
 		req.closed <- ReqClosed{
 			PeerID:     msg.ID,
