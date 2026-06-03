@@ -2,16 +2,32 @@ package prism
 
 import (
 	"testing"
+
+	"git.wisehodl.dev/jay/go-roots-ws"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNoticeHandler(t *testing.T) {
 	t.Run("notice delivered", func(t *testing.T) {
-		// p, envoy := newMockEnvoy(t)
-		// h := NewNoticeHandler(envoy)
-		// t.Cleanup(h.Close)
-		// p.receive(envelope.EncloseNotice("hello"))
-		// Eventually: receive from h.Notices()
-		// assert Message == "hello", PeerID == p.url, Timestamp non-zero
+		p, envoy := newMockEnvoy(t)
+		h := NewNoticeHandler(envoy)
+		t.Cleanup(h.Close)
+
+		p.receive([]byte(envelope.EncloseNotice("hello")))
+
+		var got Notice
+		Eventually(t, func() bool {
+			select {
+			case got = <-h.Notices():
+				return true
+			default:
+				return false
+			}
+		}, "notice not delivered")
+
+		assert.Equal(t, "hello", got.Message)
+		assert.Equal(t, p.url, got.PeerID)
+		assert.False(t, got.Timestamp.IsZero())
 	})
 
 	t.Run("malformed ignored", func(t *testing.T) {

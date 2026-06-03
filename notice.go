@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"git.wisehodl.dev/jay/go-roots-ws"
 )
 
 type NoticeReceived struct {
@@ -28,25 +30,41 @@ type NoticeHandler struct {
 }
 
 func NewNoticeHandler(e *Envoy) *NoticeHandler {
-	// SubscribeInbox([]string{"NOTICE"})
-	// make(chan Notice, 16)
-	// context.WithCancel from e.Context()
-	// wg.Add(1); go h.route()
-	return nil
+	ctx, cancel := context.WithCancel(e.Context())
+	h := &NoticeHandler{
+		envoy:   e,
+		inbox:   e.SubscribeInbox([]string{"NOTICE"}),
+		notices: make(chan Notice, 16),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	h.wg.Go(h.route)
+	return h
 }
 
 func (h *NoticeHandler) Notices() <-chan Notice { return h.notices }
 
 func (h *NoticeHandler) Close() {
-	// h.cancel()
-	// h.wg.Wait()
-	// close(h.notices)
+	h.cancel()
+	h.wg.Wait()
+	close(h.notices)
 }
 
 func (h *NoticeHandler) route() {
-	defer h.wg.Done()
-	// select ctx.Done | inbox msg
-	//   msg: envelope.FindNotice → on err continue
-	//         push Notice{PeerID, Message, time.Now()} to h.notices (blocking)
-	//         e.Observer().Record(e.PeerID(), NoticeReceived{...})
+	for {
+		select {
+		case <-h.ctx.Done():
+			return
+		case msg := <-h.inbox:
+			message, err := envelope.FindNotice(msg.Data)
+			if err != nil {
+				continue
+			}
+			h.notices <- Notice{
+				PeerID:    msg.ID,
+				Message:   message,
+				Timestamp: time.Now(),
+			}
+		}
+	}
 }
