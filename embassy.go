@@ -17,7 +17,7 @@ import (
 // ----------------------------------------------------------------------------
 
 type EmbassyPlugin struct {
-	Connect func(url string) error
+	Connect func(url string, opts ...honeybee.ConnectOption) error
 	Remove  func(url string) error
 	Send    func(url string, data []byte) error
 	Events  <-chan honeybee.PoolEvent
