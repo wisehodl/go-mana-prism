@@ -31,9 +31,20 @@ func TestNoticeHandler(t *testing.T) {
 	})
 
 	t.Run("malformed ignored", func(t *testing.T) {
-		// p.receive([]byte("not json"))
-		// Never: nothing readable from h.Notices() within NegativeTestTimeout
-		// assert no panic
+		p, envoy := newMockEnvoy(t)
+		h := NewNoticeHandler(envoy)
+		t.Cleanup(h.Close)
+
+		p.receive([]byte("not json"))
+
+		Never(t, func() bool {
+			select {
+			case <-h.Notices():
+				return true
+			default:
+				return false
+			}
+		}, "notices channel should remain empty")
 	})
 
 	t.Run("observer notified", func(t *testing.T) {
