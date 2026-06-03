@@ -1,20 +1,44 @@
 package prism
 
 import (
+	"bytes"
 	"testing"
+
+	"git.wisehodl.dev/jay/go-roots-ws"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestAuthManager(t *testing.T) {
 	t.Run("challenge triggers callback and send", func(t *testing.T) {
-		// p, envoy := newMockEnvoy(t)
-		// signed := []byte(`{"kind":22242,...}`)
-		// callback records invocation, returns signed
-		// m := NewAuthManager(envoy, callback)
-		// t.Cleanup(m.Close)
-		// p.connect(); p.receive(envelope.EncloseAuthChallenge("abc"))
-		// Eventually: callback called with "abc"
-		// Eventually: p.sent contains AUTH response envelope wrapping signed
-		// assert ChallengeReceived and AuthResponseSent recorded on observer
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+
+		signed := []byte(`{"kind":22242}`)
+		var calledWith string
+		callback := func(challenge string) ([]byte, error) {
+			calledWith = challenge
+			return signed, nil
+		}
+
+		m := NewAuthManager(envoy, callback)
+		t.Cleanup(m.Close)
+
+		p.connect()
+		p.receive([]byte(envelope.EncloseAuthChallenge("abc")))
+
+		Eventually(t, func() bool { return calledWith == "abc" }, "callback not called with challenge")
+
+		Eventually(t, func() bool {
+			select {
+			case got := <-p.sent:
+				return bytes.Contains(got, signed)
+			default:
+				return false
+			}
+		}, "AUTH response envelope not sent")
+
+		assert.Len(t, EventsOf[ChallengeReceived](obs), 1)
+		assert.Len(t, EventsOf[AuthResponseSent](obs), 1)
 	})
 
 	t.Run("callback error recorded", func(t *testing.T) {

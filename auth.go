@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"git.wisehodl.dev/jay/go-roots-ws"
 )
 
 type ChallengeReceived struct {
@@ -35,33 +37,70 @@ type AuthManager struct {
 }
 
 func NewAuthManager(e *Envoy, respond func(string) ([]byte, error)) *AuthManager {
-	// SubscribeInbox([]string{"AUTH"})
-	// SubscribeEvents()
-	// context.WithCancel from e.Context()
-	// wg.Add(2); go m.routeInbox(); go m.handleEvents()
-	return nil
+	ctx, cancel := context.WithCancel(e.Context())
+	m := &AuthManager{
+		envoy:   e,
+		respond: respond,
+		inbox:   e.SubscribeInbox([]string{"AUTH"}),
+		events:  e.SubscribeEvents(),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	m.wg.Go(m.routeInbox)
+	m.wg.Go(m.handleEvents)
+	return m
 }
 
 func (m *AuthManager) Close() {
-	// m.cancel(); m.wg.Wait()
+	m.cancel()
+	m.wg.Wait()
 }
 
 func (m *AuthManager) routeInbox() {
-	defer m.wg.Done()
-	// select ctx.Done | inbox msg
-	//   msg: envelope.FindAuthChallenge → on ErrWrongFieldType or err: continue
-	//         store m.challenge with lock
-	//         record ChallengeReceived
-	//         call m.respond(challenge)
-	//           on err: record AuthResponseFailed; continue
-	//         envelope.EncloseAuthResponse(signed)
-	//         m.envoy.Send(...)
-	//           on err: record AuthResponseFailed; continue
-	//         record AuthResponseSent
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case msg := <-m.inbox:
+			challenge, err := envelope.FindAuthChallenge(msg.Data)
+			if err != nil {
+				continue
+			}
+
+			m.mu.Lock()
+			m.challenge = challenge
+			m.mu.Unlock()
+
+			now := time.Now()
+			m.envoy.Observer().Record(msg.ID, ChallengeReceived{Challenge: challenge, At: now})
+
+			signed, err := m.respond(challenge)
+			if err != nil {
+				m.envoy.Observer().Record(msg.ID, AuthResponseFailed{Err: err, At: time.Now()})
+				continue
+			}
+
+			if err := m.envoy.Send([]byte(envelope.EncloseAuthResponse(signed))); err != nil {
+				m.envoy.Observer().Record(msg.ID, AuthResponseFailed{Err: err, At: time.Now()})
+				continue
+			}
+
+			m.envoy.Observer().Record(msg.ID, AuthResponseSent{At: time.Now()})
+		}
+	}
 }
 
 func (m *AuthManager) handleEvents() {
-	defer m.wg.Done()
-	// select ctx.Done | event
-	//   EventDisconnected: m.challenge = "" with lock
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case ev := <-m.events:
+			if ev.Kind == EventDisconnected {
+				m.mu.Lock()
+				m.challenge = ""
+				m.mu.Unlock()
+			}
+		}
+	}
 }
