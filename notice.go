@@ -60,11 +60,16 @@ func (h *NoticeHandler) route() {
 			if err != nil {
 				continue
 			}
+			now := time.Now()
 			h.notices <- Notice{
 				PeerID:    msg.ID,
 				Message:   message,
-				Timestamp: time.Now(),
+				Timestamp: now,
 			}
+			h.envoy.Observer().Record(msg.ID, NoticeReceived{
+				Message: message,
+				At:      now,
+			})
 		}
 	}
 }

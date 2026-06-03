@@ -48,9 +48,17 @@ func TestNoticeHandler(t *testing.T) {
 	})
 
 	t.Run("observer notified", func(t *testing.T) {
-		// wire mockObserver via envoy (requires constructor option or mock envoy)
-		// p.receive(envelope.EncloseNotice("hello"))
-		// Eventually: mockObserver recorded NoticeReceived{Message: "hello"}
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+		h := NewNoticeHandler(envoy)
+		t.Cleanup(h.Close)
+
+		p.receive([]byte(envelope.EncloseNotice("hello")))
+
+		Eventually(t, func() bool {
+			events := EventsOf[NoticeReceived](obs)
+			return len(events) == 1 && events[0].Message == "hello"
+		}, "NoticeReceived observable not recorded")
 	})
 
 	t.Run("close cleans up", func(t *testing.T) {
