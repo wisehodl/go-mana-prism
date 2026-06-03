@@ -53,8 +53,47 @@ func TestEventPublisher(t *testing.T) {
 	})
 
 	t.Run("publish rejected", func(t *testing.T) {
-		// same setup; feed EncloseOK(id, false, "blocked: not on allowlist")
-		// assert accepted==false, msg=="blocked: not on allowlist", err==nil
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		const id = "bbbb2222"
+		eventJSON := []byte(`{"id":"bbbb2222","kind":1}`)
+
+		type result struct {
+			accepted bool
+			message  string
+			err      error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			accepted, msg, err := pub.Publish(id, eventJSON, TestTimeout)
+			ch <- result{accepted, msg, err}
+		}()
+
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "EVENT envelope not sent")
+
+		p.receive([]byte(envelope.EncloseOK(id, false, "rejected: not on whitelist")))
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-ch:
+				return !r.accepted &&
+					r.message == "rejected: not on whitelist" &&
+					r.err == nil
+			default:
+				return false
+			}
+		}, "Publish did not return rejected result")
 	})
 
 	t.Run("publish timeout", func(t *testing.T) {
