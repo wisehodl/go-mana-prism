@@ -2,8 +2,11 @@ package prism
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
+
+	"git.wisehodl.dev/jay/go-roots-ws"
 )
 
 // ----------------------------------------------------------------------------
@@ -74,33 +77,82 @@ type EventPublisher struct {
 }
 
 func NewEventPublisher(e *Envoy) *EventPublisher {
-	// SubscribeInbox([]string{"OK"})
-	// SubscribeEvents()
-	// context.WithCancel from e.Context()
-	// make pending map
-	// wg.Add(2); go p.routeInbox(); go p.handleEvents()
-	return nil
+	ctx, cancel := context.WithCancel(e.Context())
+	p := &EventPublisher{
+		envoy:   e,
+		pending: make(map[string]*pendingEntry),
+		inbox:   e.SubscribeInbox([]string{"OK"}),
+		events:  e.SubscribeEvents(),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	p.wg.Go(p.routeInbox)
+	p.wg.Go(p.handleEvents)
+	return p
 }
 
 func (p *EventPublisher) Publish(eventID string, eventJSON []byte, timeout time.Duration) (bool, string, error) {
-	// build pendingEntry with result chan (buffered 1) and sync.Once
-	// compute deadline; create timer that fires deliver(timeout error) via once
-	// timer should lock -> deregister -> record PublishTimeout -> unlock -> deliver
-	// mu.Lock: insert into pending map
-	// if envoy connected: EncloseEvent + Send
-	//   on send error: deregister, deliver send error, return
-	//   on success: mark sent, record PublishDispatched
-	// mu.Unlock
-	// block on entry.result
-	// return received publishResult fields
-	return false, "", nil
+	entry := &pendingEntry{
+		eventID:   eventID,
+		eventJSON: eventJSON,
+		result:    make(chan publishResult, 1),
+	}
+
+	entry.timer = time.AfterFunc(timeout, func() {
+		p.mu.Lock()
+		p.deregister(eventID)
+		p.mu.Unlock()
+		p.envoy.Observer().Record(p.envoy.PeerID(),
+			PublishTimeout{EventID: eventID, At: time.Now()})
+		p.deliver(entry, publishResult{err: errors.New("publish timeout")})
+	})
+
+	p.mu.Lock()
+	p.pending[eventID] = entry
+	connected := p.envoy.IsConnected()
+	p.mu.Unlock()
+
+	if connected {
+		if err := p.trySend(entry); err != nil {
+			p.mu.Lock()
+			p.deregister(eventID)
+			p.mu.Unlock()
+			p.deliver(entry, publishResult{err: err})
+		}
+	}
+
+	r := <-entry.result
+	return r.accepted, r.message, r.err
 }
 
 func (p *EventPublisher) Close() {
-	// p.cancel()
-	// mu.Lock: iterate pending, call once.Do(deliver cancellation error) for each
-	// mu.Unlock
-	// p.wg.Wait()
+	p.cancel()
+
+	p.mu.Lock()
+	for id, e := range p.pending {
+		p.deregister(id)
+		p.deliver(e, publishResult{err: errors.New("publisher closed")})
+	}
+	p.mu.Unlock()
+
+	p.wg.Wait()
+}
+
+func (p *EventPublisher) trySend(entry *pendingEntry) error {
+	err := p.envoy.Send([]byte(envelope.EncloseEvent(entry.eventJSON)))
+	if err != nil {
+		p.envoy.Observer().Record(p.envoy.PeerID(),
+			PublishSendFailed{EventID: entry.eventID, Err: err, At: time.Now()})
+		return err
+	}
+
+	p.mu.Lock()
+	entry.sent = true
+	p.mu.Unlock()
+
+	p.envoy.Observer().Record(p.envoy.PeerID(),
+		PublishDispatched{EventID: entry.eventID, At: time.Now()})
+	return nil
 }
 
 func (p *EventPublisher) deliver(entry *pendingEntry, result publishResult) {
@@ -111,27 +163,74 @@ func (p *EventPublisher) deliver(entry *pendingEntry, result publishResult) {
 }
 
 func (p *EventPublisher) routeInbox() {
-	defer p.wg.Done()
-	// select ctx.Done | inbox msg
-	//   msg: envelope.FindOK → on err continue
-	//         mu.Lock; look up pending by eventID
-	//         if not found: mu.Unlock; continue
-	//         deregister; mu.Unlock
-	//         record PublishAccepted or PublishRejected
-	//         deliver(entry, publishResult{accepted, message, nil})
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case msg := <-p.inbox:
+			eventID, accepted, message, err := envelope.FindOK(msg.Data)
+			if err != nil {
+				continue
+			}
+
+			p.mu.Lock()
+			entry, ok := p.pending[eventID]
+			if ok {
+				p.deregister(eventID)
+			}
+			p.mu.Unlock()
+
+			if !ok {
+				continue
+			}
+
+			if accepted {
+				p.envoy.Observer().Record(msg.ID,
+					PublishAccepted{EventID: eventID, At: time.Now()})
+			} else {
+				p.envoy.Observer().Record(msg.ID,
+					PublishRejected{EventID: eventID, Message: message, At: time.Now()})
+			}
+			p.deliver(entry, publishResult{accepted: accepted, message: message})
+		}
+	}
 }
 
 func (p *EventPublisher) handleEvents() {
-	defer p.wg.Done()
-	// select ctx.Done | event
-	//   EventConnected:
-	//     mu.Lock; iterate pending where !sent
-	//       Send each; on error: deregister, deliver send error, record PublishSendFailed
-	//       on success: mark sent, record PublishDispatched
-	//     mu.Unlock
-	//   EventDisconnected:
-	//     mu.Lock; mark all sent entries as unsent
-	//     mu.Unlock
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case ev := <-p.events:
+			switch ev.Kind {
+			case EventConnected:
+				p.mu.Lock()
+				var toSend []*pendingEntry
+				for _, e := range p.pending {
+					if !e.sent {
+						toSend = append(toSend, e)
+					}
+				}
+				p.mu.Unlock()
+
+				for _, e := range toSend {
+					if err := p.trySend(e); err != nil {
+						p.mu.Lock()
+						p.deregister(e.eventID)
+						p.mu.Unlock()
+						p.deliver(e, publishResult{err: err})
+					}
+				}
+
+			case EventDisconnected:
+				p.mu.Lock()
+				for _, e := range p.pending {
+					e.sent = false
+				}
+				p.mu.Unlock()
+			}
+		}
+	}
 }
 
 func (p *EventPublisher) deregister(eventID string) {

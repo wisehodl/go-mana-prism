@@ -124,9 +124,8 @@ func NewEmbassy(
 		e.logger = slog.New(cfg.handler).With(slog.Any("component", comp))
 	}
 
-	e.wg.Add(2)
-	go e.routeEvents()
-	go e.routeInbox()
+	e.wg.Go(e.routeEvents)
+	e.wg.Go(e.routeInbox)
 
 	return e
 }
@@ -237,8 +236,6 @@ func (e *Embassy) unsubscribeInboxLock(url string) {
 }
 
 func (e *Embassy) routeEvents() {
-	defer e.wg.Done()
-
 	for {
 		select {
 		case <-e.ctx.Done():
@@ -273,8 +270,6 @@ func (e *Embassy) routeEvents() {
 }
 
 func (e *Embassy) routeInbox() {
-	defer e.wg.Done()
-
 	for {
 		select {
 		case <-e.ctx.Done():
@@ -363,9 +358,8 @@ func newEnvoy(
 		e.logger = slog.New(e.handler).With(slog.Any("component", comp))
 	}
 
-	e.wg.Add(2)
-	go e.publishEvents()
-	go e.routeInbox()
+	e.wg.Go(e.publishEvents)
+	e.wg.Go(e.routeInbox)
 
 	return e
 }
@@ -440,8 +434,6 @@ func (e *Envoy) SubscribeInbox(labels []string) <-chan InboxMessage {
 }
 
 func (e *Envoy) publishEvents() {
-	defer e.wg.Done()
-
 	for {
 		select {
 		case <-e.ctx.Done():
@@ -473,8 +465,6 @@ func (e *Envoy) publishEvents() {
 }
 
 func (e *Envoy) routeInbox() {
-	defer e.wg.Done()
-
 	for {
 		select {
 		case <-e.ctx.Done():

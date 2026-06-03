@@ -165,9 +165,8 @@ func NewRequestManager(e *Envoy) *RequestManager {
 		m.logger = slog.New(m.handler).With(slog.Any("component", comp))
 	}
 
-	m.wg.Add(2)
-	go m.handleEvents()
-	go m.routeInbox()
+	m.wg.Go(m.handleEvents)
+	m.wg.Go(m.routeInbox)
 
 	return m
 }
@@ -354,8 +353,6 @@ func (m *RequestManager) deregister(req *request) {
 }
 
 func (m *RequestManager) handleEvents() {
-	defer m.wg.Done()
-
 	for {
 		select {
 		case <-m.ctx.Done():
@@ -381,8 +378,6 @@ func (m *RequestManager) handleEvents() {
 }
 
 func (m *RequestManager) routeInbox() {
-	defer m.wg.Done()
-
 	for {
 		select {
 		case <-m.ctx.Done():

@@ -2,16 +2,54 @@ package prism
 
 import (
 	"testing"
+
+	"git.wisehodl.dev/jay/go-roots-ws"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestEventPublisher(t *testing.T) {
 	t.Run("publish accepted", func(t *testing.T) {
-		// p, envoy := newMockEnvoy(t); p.connect()
-		// pub := NewEventPublisher(envoy); t.Cleanup(pub.Close)
-		// go: accepted, msg, err := pub.Publish(id, json, TestTimeout)
-		// Eventually: EVENT envelope on p.sent
-		// p.receive(envelope.EncloseOK(id, true, ""))
-		// assert accepted==true, msg=="", err==nil
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		const id = "aaaa1111"
+		eventJSON := []byte(`{"id":"aaaa1111","kind":1}`)
+
+		type result struct {
+			accepted bool
+			message  string
+			err      error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			accepted, msg, err := pub.Publish(id, eventJSON, TestTimeout)
+			ch <- result{accepted, msg, err}
+		}()
+
+		var sent []byte
+		Eventually(t, func() bool {
+			select {
+			case sent = <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "EVENT envelope not sent")
+		assert.Contains(t, string(sent), id)
+
+		p.receive([]byte(envelope.EncloseOK(id, true, "")))
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-ch:
+				return r.accepted && r.message == "" && r.err == nil
+			default:
+				return false
+			}
+		}, "Publish did not return accepted result")
 	})
 
 	t.Run("publish rejected", func(t *testing.T) {
