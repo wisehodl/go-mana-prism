@@ -74,9 +74,23 @@ func TestAuthManager(t *testing.T) {
 	})
 
 	t.Run("send error recorded", func(t *testing.T) {
-		// callback succeeds
-		// send returns error
-		// assert AuthResponseFailed recorded
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+
+		callback := func(challenge string) ([]byte, error) {
+			return []byte(`{"kind":22242}`), nil
+		}
+
+		m := NewAuthManager(envoy, callback)
+		t.Cleanup(m.Close)
+
+		p.setSendError(errors.New("send failed"))
+		p.connect()
+		p.receive([]byte(envelope.EncloseAuthChallenge("abc")))
+
+		Eventually(t, func() bool {
+			return len(EventsOf[AuthResponseFailed](obs)) == 1
+		}, "AuthResponseFailed not recorded")
 	})
 
 	t.Run("disconnect resets state", func(t *testing.T) {
