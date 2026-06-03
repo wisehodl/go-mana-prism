@@ -3,6 +3,7 @@ package prism
 import (
 	"bytes"
 	"errors"
+	"sync"
 	"testing"
 
 	"git.wisehodl.dev/jay/go-roots-ws"
@@ -94,11 +95,43 @@ func TestAuthManager(t *testing.T) {
 	})
 
 	t.Run("disconnect resets state", func(t *testing.T) {
-		// p.connect(); feed AUTH "abc"; callback fires
-		// p.disconnect()
-		// assert m.challenge == "" (inspect via exported accessor or package-level test access)
-		// p.connect(); feed AUTH "def"
-		// assert callback fires again with "def"
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+
+		var mu sync.Mutex
+		var calls []string
+		callback := func(challenge string) ([]byte, error) {
+			mu.Lock()
+			calls = append(calls, challenge)
+			mu.Unlock()
+			return []byte(`{"kind":22242}`), nil
+		}
+
+		m := NewAuthManager(envoy, callback)
+		t.Cleanup(m.Close)
+
+		p.connect()
+		p.receive([]byte(envelope.EncloseAuthChallenge("abc")))
+		Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(calls) == 1 && calls[0] == "abc"
+		}, "first callback not fired")
+
+		p.disconnect()
+		// drain the sent channel so p.sent doesn't block the second send
+		select {
+		case <-p.sent:
+		default:
+		}
+
+		p.connect()
+		p.receive([]byte(envelope.EncloseAuthChallenge("def")))
+		Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(calls) == 2 && calls[1] == "def"
+		}, "second callback not fired with new challenge")
 	})
 
 	t.Run("replacement challenge", func(t *testing.T) {
