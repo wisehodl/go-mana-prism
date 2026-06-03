@@ -62,7 +62,12 @@ func TestNoticeHandler(t *testing.T) {
 	})
 
 	t.Run("close cleans up", func(t *testing.T) {
-		// h.Close()
-		// assert <-h.Notices() returns zero Notice, ok == false
+		_, envoy := newMockEnvoy(t)
+		h := NewNoticeHandler(envoy)
+
+		h.Close()
+
+		_, ok := <-h.Notices()
+		assert.False(t, ok, "notices channel should be closed")
 	})
 }
