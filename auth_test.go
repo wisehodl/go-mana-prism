@@ -182,8 +182,20 @@ func TestAuthManager(t *testing.T) {
 	})
 
 	t.Run("close cleans up", func(t *testing.T) {
-		// m.Close()
-		// feed another AUTH
-		// Never: callback invoked after close
+		p, envoy := newMockEnvoy(t)
+
+		called := false
+		callback := func(challenge string) ([]byte, error) {
+			called = true
+			return []byte(`{"kind":22242}`), nil
+		}
+
+		m := NewAuthManager(envoy, callback)
+		p.connect()
+		m.Close()
+
+		p.receive([]byte(envelope.EncloseAuthChallenge("abc")))
+
+		Never(t, func() bool { return called }, "callback should not fire after Close")
 	})
 }
