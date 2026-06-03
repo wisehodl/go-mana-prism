@@ -135,9 +135,31 @@ func TestAuthManager(t *testing.T) {
 	})
 
 	t.Run("replacement challenge", func(t *testing.T) {
-		// feed AUTH "abc"; feed AUTH "def" without disconnect
-		// assert callback called twice; second call receives "def"
-		// assert two AUTH response envelopes sent
+		p, envoy := newMockEnvoy(t)
+
+		var mu sync.Mutex
+		var calls []string
+		callback := func(challenge string) ([]byte, error) {
+			mu.Lock()
+			calls = append(calls, challenge)
+			mu.Unlock()
+			return []byte(`{"kind":22242}`), nil
+		}
+
+		m := NewAuthManager(envoy, callback)
+		t.Cleanup(m.Close)
+
+		p.connect()
+		p.receive([]byte(envelope.EncloseAuthChallenge("abc")))
+		p.receive([]byte(envelope.EncloseAuthChallenge("def")))
+
+		Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(calls) == 2 && calls[1] == "def"
+		}, "callback not called twice with both challenges")
+
+		assert.GreaterOrEqual(t, len(p.sent), 2)
 	})
 
 	t.Run("malformed AUTH ignored", func(t *testing.T) {
