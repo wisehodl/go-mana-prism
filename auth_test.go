@@ -163,9 +163,22 @@ func TestAuthManager(t *testing.T) {
 	})
 
 	t.Run("malformed AUTH ignored", func(t *testing.T) {
-		// p.receive(envelope.EncloseAuthResponse([]byte("{}"))) — second element is object
-		// Never: callback called
-		// assert no panic
+		p, envoy := newMockEnvoy(t)
+
+		called := false
+		callback := func(challenge string) ([]byte, error) {
+			called = true
+			return []byte(`{"kind":22242}`), nil
+		}
+
+		m := NewAuthManager(envoy, callback)
+		t.Cleanup(m.Close)
+
+		p.connect()
+		// EncloseAuthResponse wraps a JSON object as the second element — not a string
+		p.receive([]byte(envelope.EncloseAuthResponse([]byte(`{}`))))
+
+		Never(t, func() bool { return called }, "callback should not be invoked for malformed AUTH")
 	})
 
 	t.Run("close cleans up", func(t *testing.T) {
