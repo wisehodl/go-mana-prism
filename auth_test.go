@@ -2,6 +2,7 @@ package prism
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"git.wisehodl.dev/jay/go-roots-ws"
@@ -26,7 +27,8 @@ func TestAuthManager(t *testing.T) {
 		p.connect()
 		p.receive([]byte(envelope.EncloseAuthChallenge("abc")))
 
-		Eventually(t, func() bool { return calledWith == "abc" }, "callback not called with challenge")
+		Eventually(t, func() bool { return calledWith == "abc" },
+			"callback not called with challenge")
 
 		Eventually(t, func() bool {
 			select {
@@ -42,10 +44,33 @@ func TestAuthManager(t *testing.T) {
 	})
 
 	t.Run("callback error recorded", func(t *testing.T) {
-		// callback returns errors.New("signing failed")
-		// p.receive(envelope.EncloseAuthChallenge("abc"))
-		// Never: anything on p.sent
-		// assert ChallengeReceived and AuthResponseFailed recorded
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+
+		callback := func(challenge string) ([]byte, error) {
+			return nil, errors.New("signing failed")
+		}
+
+		m := NewAuthManager(envoy, callback)
+		t.Cleanup(m.Close)
+
+		p.connect()
+		p.receive([]byte(envelope.EncloseAuthChallenge("abc")))
+
+		Eventually(t, func() bool {
+			return len(EventsOf[AuthResponseFailed](obs)) == 1
+		}, "AuthResponseFailed not recorded")
+
+		Never(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "no AUTH envelope should be sent on callback error")
+
+		assert.Len(t, EventsOf[ChallengeReceived](obs), 1)
 	})
 
 	t.Run("send error recorded", func(t *testing.T) {
