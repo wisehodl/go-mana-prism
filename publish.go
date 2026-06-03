@@ -55,6 +55,7 @@ type pendingEntry struct {
 	eventJSON []byte
 	sent      bool
 	result    chan publishResult
+	mu        sync.Mutex
 	once      sync.Once
 	timer     *time.Timer
 }
@@ -138,18 +139,22 @@ func (p *EventPublisher) Close() {
 	p.wg.Wait()
 }
 
+// trySend sends the EVENT envelope. It does not modify entry.sent — callers
+// are responsible for setting it under p.mu before and/or after this call.
 func (p *EventPublisher) trySend(entry *pendingEntry) error {
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.sent {
+		return nil
+	}
+
 	err := p.envoy.Send([]byte(envelope.EncloseEvent(entry.eventJSON)))
 	if err != nil {
 		p.envoy.Observer().Record(p.envoy.PeerID(),
 			PublishSendFailed{EventID: entry.eventID, Err: err, At: time.Now()})
 		return err
 	}
-
-	p.mu.Lock()
 	entry.sent = true
-	p.mu.Unlock()
-
 	p.envoy.Observer().Record(p.envoy.PeerID(),
 		PublishDispatched{EventID: entry.eventID, At: time.Now()})
 	return nil
@@ -225,7 +230,9 @@ func (p *EventPublisher) handleEvents() {
 			case EventDisconnected:
 				p.mu.Lock()
 				for _, e := range p.pending {
+					e.mu.Lock()
 					e.sent = false
+					e.mu.Unlock()
 				}
 				p.mu.Unlock()
 			}

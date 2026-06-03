@@ -9,7 +9,8 @@ import (
 
 func TestEventPublisher(t *testing.T) {
 	t.Run("publish accepted", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 		p.connect()
 
 		pub := NewEventPublisher(envoy)
@@ -50,10 +51,14 @@ func TestEventPublisher(t *testing.T) {
 				return false
 			}
 		}, "Publish did not return accepted result")
+
+		assert.Len(t, EventsOf[PublishDispatched](obs), 1)
+		assert.Len(t, EventsOf[PublishAccepted](obs), 1)
 	})
 
 	t.Run("publish rejected", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 		p.connect()
 
 		pub := NewEventPublisher(envoy)
@@ -94,11 +99,39 @@ func TestEventPublisher(t *testing.T) {
 				return false
 			}
 		}, "Publish did not return rejected result")
+
+		assert.Len(t, EventsOf[PublishDispatched](obs), 1)
+		assert.Len(t, EventsOf[PublishRejected](obs), 1)
 	})
 
 	t.Run("publish timeout", func(t *testing.T) {
-		// pub.Publish(id, json, 75*time.Millisecond) — do not feed OK
-		// assert err != nil (timeout error) after ~75ms
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+		p.connect()
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		const id = "cccc3333"
+		eventJSON := []byte(`{"id":"cccc3333","kind":1}`)
+
+		ch := make(chan error, 1)
+		go func() {
+			_, _, err := pub.Publish(id, eventJSON, NegativeTestTimeout)
+			ch <- err
+		}()
+
+		Eventually(t, func() bool {
+			select {
+			case err := <-ch:
+				return err != nil
+			default:
+				return false
+			}
+		}, "Publish did not return a timeout error")
+
+		assert.Len(t, EventsOf[PublishDispatched](obs), 1)
+		assert.Len(t, EventsOf[PublishTimeout](obs), 1)
 	})
 
 	t.Run("concurrent correlation", func(t *testing.T) {
