@@ -5,11 +5,14 @@ import (
 	"git.wisehodl.dev/jay/go-honeybee"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"github.com/stretchr/testify/assert"
+	"sync"
 	"testing"
 	"time"
 )
 
+// ----------------------------------------------------------------------------
 // Async Helpers
+// ----------------------------------------------------------------------------
 
 const (
 	TestTimeout         = 2 * time.Second
@@ -27,6 +30,10 @@ func Never(t *testing.T, condition func() bool, msg string) {
 	assert.Never(t, condition, NegativeTestTimeout, TestTick, msg)
 }
 
+// ----------------------------------------------------------------------------
+// Mock Pool
+// ----------------------------------------------------------------------------
+
 type mockPool struct {
 	plugin  EmbassyPlugin
 	ctx     context.Context
@@ -36,40 +43,46 @@ type mockPool struct {
 	events  chan honeybee.PoolEvent
 	inbox   chan honeybee.InboxMessage
 	sent    chan []byte
+	sendMu  sync.Mutex
+	sendErr error
 }
-
-// Mock Pool
 
 func newMockPool(t *testing.T) *mockPool {
 	t.Helper()
 
-	ctx := component.MustNew(context.Background(), "prism", "test")
-	url := "wss://test"
+	p := &mockPool{}
 
-	added := make(chan struct{})
-	removed := make(chan struct{})
-	events := make(chan honeybee.PoolEvent, 16)
-	inbox := make(chan honeybee.InboxMessage, 16)
-	sent := make(chan []byte, 16)
+	p.ctx = component.MustNew(context.Background(), "prism", "test")
+	p.url = "wss://test"
 
-	plugin := EmbassyPlugin{
-		Connect: func(url string) error { close(added); return nil },
-		Remove:  func(url string) error { close(removed); return nil },
-		Send:    func(_ string, data []byte) error { sent <- data; return nil },
-		Events:  events,
-		Inbox:   inbox,
+	p.added = make(chan struct{})
+	p.removed = make(chan struct{})
+	p.events = make(chan honeybee.PoolEvent, 16)
+	p.inbox = make(chan honeybee.InboxMessage, 16)
+	p.sent = make(chan []byte, 16)
+	sendFunc := func(_ string, data []byte) error {
+		p.sendMu.Lock()
+		err := p.sendErr
+		p.sendMu.Unlock()
+		if err != nil {
+			return err
+		}
+		p.sent <- data
+		return nil
 	}
 
-	return &mockPool{
-		plugin:  plugin,
-		ctx:     ctx,
-		url:     url,
-		added:   added,
-		removed: removed,
-		events:  events,
-		inbox:   inbox,
-		sent:    sent,
+	p.plugin = EmbassyPlugin{
+		Connect: func(url string, opts ...honeybee.ConnectOption) error {
+			close(p.added)
+			return nil
+		},
+		Remove: func(url string) error { close(p.removed); return nil },
+		Send:   sendFunc,
+		Events: p.events,
+		Inbox:  p.inbox,
 	}
+
+	return p
 }
 
 func (p *mockPool) connect() {
@@ -90,15 +103,56 @@ func (p *mockPool) receive(data []byte) {
 	}
 }
 
-// MockEnvoy
+func (p *mockPool) setSendError(err error) {
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
+	p.sendErr = err
+}
 
-func newMockEnvoy(t *testing.T) (*mockPool, *Envoy) {
+// ----------------------------------------------------------------------------
+// MockEnvoy
+// ----------------------------------------------------------------------------
+
+func newMockEnvoy(t *testing.T, opts ...EmbassyOption) (*mockPool, *Envoy) {
 	t.Helper()
 
 	p := newMockPool(t)
-	emb := NewEmbassy(p.ctx, p.plugin)
+	emb := NewEmbassy(p.ctx, p.plugin, opts...)
 	err := emb.Dispatch(p.url)
 	assert.NoError(t, err)
 	envoy := emb.Call(p.url)
 	return p, envoy
+}
+
+// ----------------------------------------------------------------------------
+// MockObserver
+// ----------------------------------------------------------------------------
+
+type observerRecord struct {
+	peerID string
+	event  any
+}
+
+type mockObserver struct {
+	mu      sync.Mutex
+	records []observerRecord
+}
+
+func (o *mockObserver) Record(peerID string, event any) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.records = append(o.records, observerRecord{peerID, event})
+}
+
+// EventsOf returns all recorded events of type T.
+func EventsOf[T any](o *mockObserver) []T {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	var out []T
+	for _, r := range o.records {
+		if v, ok := r.event.(T); ok {
+			out = append(out, v)
+		}
+	}
+	return out
 }
