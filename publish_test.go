@@ -1,6 +1,7 @@
 package prism
 
 import (
+	"errors"
 	"testing"
 
 	"git.wisehodl.dev/jay/go-roots-ws"
@@ -335,7 +336,33 @@ func TestEventPublisher(t *testing.T) {
 	})
 
 	t.Run("send failure delivers error", func(t *testing.T) {
-		// Publish; assert caller receives send error immediately (not timeout)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+		p.connect()
+		p.setSendError(errors.New("send failed"))
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		ch := make(chan error, 1)
+		go func() {
+			_, _, err := pub.Publish(
+				"gggg7777", []byte(`{"id":"gggg7777"}`), TestTimeout)
+			ch <- err
+		}()
+
+		var err error
+		Eventually(t, func() bool {
+			select {
+			case err = <-ch:
+				return err != nil
+			default:
+				return false
+			}
+		}, "Publish did not return a send error")
+
+		assert.ErrorContains(t, err, "send failed")
+		assert.Len(t, EventsOf[PublishSendFailed](obs), 1)
 	})
 
 	t.Run("disconnect then send failure on reconnect", func(t *testing.T) {
