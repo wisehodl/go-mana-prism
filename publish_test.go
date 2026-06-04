@@ -122,15 +122,17 @@ func TestEventPublisher(t *testing.T) {
 			ch <- err
 		}()
 
+		var err error
 		Eventually(t, func() bool {
 			select {
-			case err := <-ch:
+			case err = <-ch:
 				return err != nil
 			default:
 				return false
 			}
 		}, "Publish did not return a timeout error")
 
+		assert.ErrorContains(t, err, "publish timeout")
 		assert.Len(t, EventsOf[PublishDispatched](obs), 1)
 		assert.Len(t, EventsOf[PublishTimeout](obs), 1)
 	})
@@ -409,9 +411,41 @@ func TestEventPublisher(t *testing.T) {
 	})
 
 	t.Run("close cancels pending", func(t *testing.T) {
-		// go pub.Publish (blocks)
-		// pub.Close() before feeding OK
-		// assert caller receives cancellation error
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+
+		pub := NewEventPublisher(envoy)
+
+		ch := make(chan error, 1)
+		go func() {
+			_, _, err := pub.Publish(
+				"iiii9999", []byte(`{"id":"iiii9999"}`), TestTimeout)
+			ch <- err
+		}()
+
+		// wait for EVENT to be sent before closing
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "EVENT envelope not sent")
+
+		pub.Close()
+
+		var err error
+		Eventually(t, func() bool {
+			select {
+			case err = <-ch:
+				return err != nil
+			default:
+				return false
+			}
+		}, "Publish did not return a cancellation error")
+
+		assert.ErrorContains(t, err, "closed")
 	})
 
 	t.Run("unknown OK ignored", func(t *testing.T) {
