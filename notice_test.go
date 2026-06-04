@@ -57,7 +57,9 @@ func TestNoticeHandler(t *testing.T) {
 
 		Eventually(t, func() bool {
 			events := EventsOf[NoticeReceived](obs)
-			return len(events) == 1 && events[0].Message == "hello"
+			return len(events) == 1 &&
+				events[0].Message == "hello" &&
+				!events[0].At.IsZero()
 		}, "NoticeReceived observable not recorded")
 	})
 
