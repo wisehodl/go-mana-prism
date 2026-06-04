@@ -2,8 +2,12 @@ git.wisehodl.dev/jay/go-honeybee v0.5.0 h1:tAhXMLJnxMMhWJstA1f3OYVsdQf0rstl5/AaJ
 git.wisehodl.dev/jay/go-honeybee v0.5.0/go.mod h1:91H66sH5t1BHERGMihybeL1CDMu6vJgGuxjkUxfaqi4=
 git.wisehodl.dev/jay/go-mana-component v0.1.0 h1:wWYN5MzC9Hq3tEt4z7FjrwNuQz3rZY3RWAmgmNE8EZE=
 git.wisehodl.dev/jay/go-mana-component v0.1.0/go.mod h1:r2ZaTjKzwV5JJfC5boikxtjAKusPrzlJU/7qul0EUqA=
+git.wisehodl.dev/jay/go-mana-component v0.2.0 h1:uuk8YeFH/yQCtcpotkgQERDwFGY85/rNCUgk6hCGhW4=
+git.wisehodl.dev/jay/go-mana-component v0.2.0/go.mod h1:r2ZaTjKzwV5JJfC5boikxtjAKusPrzlJU/7qul0EUqA=
 git.wisehodl.dev/jay/go-roots-ws v0.1.0 h1:p1veCkpOmL26N//Qz7ekJOYj1Ck30ai4OKq9dxLjodk=
 git.wisehodl.dev/jay/go-roots-ws v0.1.0/go.mod h1:ANQOOP13lHs2uQwYhrSQGAlL7+zR6QvbLzNPmNBJssQ=
+git.wisehodl.dev/jay/go-roots-ws v0.2.0 h1:XzlrGu0//09SrTWWd6A8b/bGck2EZnJq2JOA+UJql28=
+git.wisehodl.dev/jay/go-roots-ws v0.2.0/go.mod h1:ANQOOP13lHs2uQwYhrSQGAlL7+zR6QvbLzNPmNBJssQ=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=

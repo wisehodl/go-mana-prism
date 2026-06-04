@@ -4,8 +4,8 @@ go 1.25.0
 
 require (
 	git.wisehodl.dev/jay/go-honeybee v0.5.0
-	git.wisehodl.dev/jay/go-mana-component v0.1.0
-	git.wisehodl.dev/jay/go-roots-ws v0.1.0
+	git.wisehodl.dev/jay/go-mana-component v0.2.0
+	git.wisehodl.dev/jay/go-roots-ws v0.2.0
 	github.com/stretchr/testify v1.11.1
 )
 
