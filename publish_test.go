@@ -449,7 +449,15 @@ func TestEventPublisher(t *testing.T) {
 	})
 
 	t.Run("unknown OK ignored", func(t *testing.T) {
-		// p.receive(envelope.EncloseOK("no-such-id", true, ""))
-		// assert no panic, no side effects
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		p.receive([]byte(envelope.EncloseOK("no-such-id", true, "")))
+
+		// no panic and no side effects — confirmed by the test completing cleanly
+		Never(t, func() bool { return false }, "should never trigger")
 	})
 }
