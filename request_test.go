@@ -1,6 +1,7 @@
 package prism
 
 import (
+	"errors"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
 	"testing"
@@ -78,7 +79,8 @@ func TestRequestManager_Options(t *testing.T) {
 
 func TestRequestManager_Stream(t *testing.T) {
 	t.Run("sends req when connected", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
@@ -104,6 +106,12 @@ func TestRequestManager_Stream(t *testing.T) {
 		}, "expected REQ send")
 
 		assert.Equal(t, []byte(envelope.EncloseReq(id, filters)), got)
+
+		Eventually(t, func() bool {
+			return len(EventsOf[ReqDispatched](obs)) == 1
+		}, "expected ReqDispatched observable")
+		dispatched := EventsOf[ReqDispatched](obs)
+		assert.Equal(t, id, dispatched[0].SubID)
 	})
 
 	t.Run("does not send req when disconnected", func(t *testing.T) {
@@ -130,7 +138,8 @@ func TestRequestManager_Stream(t *testing.T) {
 	})
 
 	t.Run("forwards events to caller", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
@@ -172,10 +181,18 @@ func TestRequestManager_Stream(t *testing.T) {
 		assert.Len(t, got, 2)
 		assert.Equal(t, eventA, got[0].Data)
 		assert.Equal(t, eventB, got[1].Data)
+
+		Eventually(t, func() bool {
+			return len(EventsOf[FirstEventReceived](obs)) == 1
+		}, "expected FirstEventReceived observable")
+		first := EventsOf[FirstEventReceived](obs)
+		assert.Equal(t, id, first[0].SubID)
+		assert.False(t, first[0].ReceivedAt.IsZero())
 	})
 
 	t.Run("ignores eose", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
@@ -225,10 +242,17 @@ func TestRequestManager_Stream(t *testing.T) {
 				return false
 			}
 		}, "expected event after eose")
+
+		Eventually(t, func() bool {
+			return len(EventsOf[StreamEOSEReceived](obs)) == 1
+		}, "expected StreamEOSEReceived observable")
+		eoseEvents := EventsOf[StreamEOSEReceived](obs)
+		assert.Equal(t, id, eoseEvents[0].SubID)
 	})
 
 	t.Run("closed deregisters and signals caller", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
@@ -262,6 +286,13 @@ func TestRequestManager_Stream(t *testing.T) {
 		assert.Equal(t, "error: test", got.Data)
 
 		Eventually(t, func() bool {
+			return len(EventsOf[ClosedReceived](obs)) == 1
+		}, "expected ClosedReceived observable")
+		closedEvents := EventsOf[ClosedReceived](obs)
+		assert.Equal(t, id, closedEvents[0].SubID)
+		assert.Equal(t, "error: test", closedEvents[0].Message)
+
+		Eventually(t, func() bool {
 			select {
 			case _, ok := <-events:
 				return !ok
@@ -283,6 +314,47 @@ func TestRequestManager_Stream(t *testing.T) {
 		_, ok := m.reqs[id]
 		m.mu.RUnlock()
 		assert.False(t, ok, "registration should be removed from reqs")
+	})
+
+	t.Run("send failure recorded", func(t *testing.T) {
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be connected")
+
+		m := NewRequestManager(envoy)
+		t.Cleanup(func() { m.Close() })
+
+		// disconnect, arm send error, reconnect so the send attempt
+		// happens after the error is in place
+		p.disconnect()
+		p.setSendError(errors.New("send failed"))
+		p.connect()
+		Eventually(t, envoy.IsConnected, "envoy should be reconnected")
+
+		// prevent activate() race between Stream and on-connect handler
+		time.Sleep(20 * time.Millisecond)
+
+		filters := [][]byte{[]byte(`{}`)}
+		id, _, _, err := m.Stream(filters)
+		assert.NoError(t, err)
+
+		Eventually(t, func() bool {
+			return len(EventsOf[ReqSendFailed](obs)) == 1
+		}, "expected ReqSendFailed observable")
+		failed := EventsOf[ReqSendFailed](obs)
+		assert.Equal(t, id, failed[0].SubID)
+		assert.NotNil(t, failed[0].Err)
+
+		Never(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "no REQ envelope should have been sent")
 	})
 }
 
@@ -377,7 +449,8 @@ func TestRequestManager_Cancel(t *testing.T) {
 
 func TestRequestManager_Query(t *testing.T) {
 	t.Run("returns events and nil closed on eose", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
@@ -387,6 +460,7 @@ func TestRequestManager_Query(t *testing.T) {
 		filters := [][]byte{[]byte(`{}`)}
 		eventData := []byte(`{"id":"abc"}`)
 
+		var querySubID string
 		go func() {
 			// wait for the REQ to arrive, extract the sub ID
 			reqBytes := <-p.sent
@@ -395,6 +469,7 @@ func TestRequestManager_Query(t *testing.T) {
 				t.Errorf("FindReq: %v", err)
 				return
 			}
+			querySubID = subID
 			// inject three EVENTs then EOSE
 			for range 3 {
 				raw := envelope.EncloseSubscriptionEvent(subID, eventData)
@@ -408,6 +483,12 @@ func TestRequestManager_Query(t *testing.T) {
 
 		assert.Len(t, events, 3)
 		assert.Nil(t, closed)
+
+		Eventually(t, func() bool {
+			return len(EventsOf[QueryEOSEReceived](obs)) == 1
+		}, "expected QueryEOSEReceived observable")
+		qeose := EventsOf[QueryEOSEReceived](obs)
+		assert.Equal(t, querySubID, qeose[0].SubID)
 
 		// CLOSE envelope should have been sent after EOSE
 		var closeEnv []byte
@@ -451,7 +532,8 @@ func TestRequestManager_Query(t *testing.T) {
 	})
 
 	t.Run("returns partial events on timeout", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be connected")
 
@@ -483,6 +565,9 @@ func TestRequestManager_Query(t *testing.T) {
 		assert.GreaterOrEqual(t, elapsed, queryTimeout)
 		assert.Len(t, events, 2)
 		assert.Nil(t, closed)
+
+		missed := EventsOf[MissedEOSE](obs)
+		assert.Len(t, missed, 1)
 	})
 
 	t.Run("connects within timeout and returns events", func(t *testing.T) {
