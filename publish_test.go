@@ -366,10 +366,46 @@ func TestEventPublisher(t *testing.T) {
 	})
 
 	t.Run("disconnect then send failure on reconnect", func(t *testing.T) {
-		// p.connect(); go pub.Publish (EVENT sent)
-		// p.disconnect()
-		// p.connect()
-		// assert caller receives send error
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
+		p.connect()
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		ch := make(chan error, 1)
+		go func() {
+			_, _, err := pub.Publish(
+				"hhhh8888", []byte(`{"id":"hhhh8888"}`), TestTimeout)
+			ch <- err
+		}()
+
+		// first EVENT sent successfully
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "first EVENT envelope not sent")
+
+		p.disconnect()
+		p.setSendError(errors.New("send failed on reconnect"))
+		p.connect()
+
+		var err error
+		Eventually(t, func() bool {
+			select {
+			case err = <-ch:
+				return err != nil
+			default:
+				return false
+			}
+		}, "Publish did not return a send error after reconnect")
+
+		assert.ErrorContains(t, err, "send failed on reconnect")
+		assert.Len(t, EventsOf[PublishSendFailed](obs), 1)
 	})
 
 	t.Run("close cancels pending", func(t *testing.T) {
