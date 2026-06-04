@@ -449,7 +449,8 @@ func TestEventPublisher(t *testing.T) {
 	})
 
 	t.Run("unknown OK ignored", func(t *testing.T) {
-		p, envoy := newMockEnvoy(t)
+		obs := &mockObserver{}
+		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 		p.connect()
 
 		pub := NewEventPublisher(envoy)
@@ -457,7 +458,15 @@ func TestEventPublisher(t *testing.T) {
 
 		p.receive([]byte(envelope.EncloseOK("no-such-id", true, "")))
 
-		// no panic and no side effects — confirmed by the test completing cleanly
-		Never(t, func() bool { return false }, "should never trigger")
+		Never(t, func() bool {
+			pub.mu.Lock()
+			pendingLen := len(pub.pending)
+			pub.mu.Unlock()
+			return pendingLen > 0 ||
+				len(EventsOf[PublishAccepted](obs)) > 0 ||
+				len(EventsOf[PublishRejected](obs)) > 0 ||
+				len(EventsOf[PublishTimeout](obs)) > 0 ||
+				len(EventsOf[PublishSendFailed](obs)) > 0
+		}, "unknown OK should produce no side effects")
 	})
 }
