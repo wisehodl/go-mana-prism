@@ -278,12 +278,60 @@ func TestEventPublisher(t *testing.T) {
 		}, "Publish did not return accepted result after connect")
 	})
 
-	t.Run("resend after disconnect", func(t *testing.T) {
-		// p.connect(); go pub.Publish
-		// Eventually: first EVENT sent
-		// p.disconnect(); p.connect()
-		// Eventually: second EVENT sent
-		// p.receive(EncloseOK); assert caller returns successfully
+	t.Run("resend after disconnect if OK not received in time", func(t *testing.T) {
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		const id = "ffff6666"
+		eventJSON := []byte(`{"id":"ffff6666"}`)
+
+		type result struct {
+			accepted bool
+			err      error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			accepted, _, err := pub.Publish(id, eventJSON, TestTimeout)
+			ch <- result{accepted, err}
+		}()
+
+		// first EVENT sent
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "first EVENT envelope not sent")
+
+		p.disconnect()
+		p.connect()
+
+		// second EVENT sent after reconnect
+		// because OK was not yet received
+		Eventually(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "second EVENT envelope not sent after reconnect")
+
+		p.receive([]byte(envelope.EncloseOK(id, true, "")))
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-ch:
+				return r.accepted && r.err == nil
+			default:
+				return false
+			}
+		}, "Publish did not return accepted result after resend")
 	})
 
 	t.Run("send failure delivers error", func(t *testing.T) {
