@@ -135,9 +135,63 @@ func TestEventPublisher(t *testing.T) {
 	})
 
 	t.Run("concurrent correlation", func(t *testing.T) {
-		// Publish A and B in separate goroutines
-		// feed OK for B, then OK for A
-		// assert each caller receives its own result
+		p, envoy := newMockEnvoy(t)
+		p.connect()
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		type result struct {
+			accepted bool
+			message  string
+			err      error
+		}
+
+		chA := make(chan result, 1)
+		chB := make(chan result, 1)
+
+		go func() {
+			accepted, msg, err := pub.Publish(
+				"aaaa", []byte(`{"id":"aaaa"}`), TestTimeout)
+			chA <- result{accepted, msg, err}
+		}()
+		go func() {
+			accepted, msg, err := pub.Publish(
+				"bbbb", []byte(`{"id":"bbbb"}`), TestTimeout)
+			chB <- result{accepted, msg, err}
+		}()
+
+		// drain both EVENT envelopes before feeding OKs
+		Eventually(t, func() bool { return len(p.sent) == 2 },
+			"expected two EVENT envelopes")
+		<-p.sent
+		<-p.sent
+
+		// feed OK for B first, then A
+		p.receive([]byte(envelope.EncloseOK("bbbb", true, "b-msg")))
+		p.receive([]byte(envelope.EncloseOK("aaaa", false, "a-msg")))
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-chA:
+				return !r.accepted &&
+					r.message == "a-msg" &&
+					r.err == nil
+			default:
+				return false
+			}
+		}, "caller A did not receive its result")
+
+		Eventually(t, func() bool {
+			select {
+			case r := <-chB:
+				return r.accepted &&
+					r.message == "b-msg" &&
+					r.err == nil
+			default:
+				return false
+			}
+		}, "caller B did not receive its result")
 	})
 
 	t.Run("publish while disconnected times out", func(t *testing.T) {
