@@ -16,8 +16,11 @@ func TestAuthManager(t *testing.T) {
 		p, envoy := newMockEnvoy(t, WithEmbassyObserver(obs))
 
 		signed := []byte(`{"kind":22242}`)
+		var mu sync.Mutex
 		var calledWith string
 		callback := func(challenge string) ([]byte, error) {
+			mu.Lock()
+			defer mu.Unlock()
 			calledWith = challenge
 			return signed, nil
 		}
@@ -28,7 +31,11 @@ func TestAuthManager(t *testing.T) {
 		p.connect()
 		p.receive([]byte(envelope.EncloseAuthChallenge("abc")))
 
-		Eventually(t, func() bool { return calledWith == "abc" },
+		Eventually(t, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return calledWith == "abc"
+		},
 			"callback not called with challenge")
 
 		Eventually(t, func() bool {

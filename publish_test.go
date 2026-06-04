@@ -364,7 +364,9 @@ func TestEventPublisher(t *testing.T) {
 		}, "Publish did not return a send error")
 
 		assert.ErrorContains(t, err, "send failed")
-		assert.Len(t, EventsOf[PublishSendFailed](obs), 1)
+
+		// on connect event handler may race with Publish()
+		assert.GreaterOrEqual(t, len(EventsOf[PublishSendFailed](obs)), 1)
 	})
 
 	t.Run("disconnect then send failure on reconnect", func(t *testing.T) {

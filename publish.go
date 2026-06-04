@@ -139,8 +139,6 @@ func (p *EventPublisher) Close() {
 	p.wg.Wait()
 }
 
-// trySend sends the EVENT envelope. It does not modify entry.sent — callers
-// are responsible for setting it under p.mu before and/or after this call.
 func (p *EventPublisher) trySend(entry *pendingEntry) error {
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
@@ -212,9 +210,11 @@ func (p *EventPublisher) handleEvents() {
 				p.mu.Lock()
 				var toSend []*pendingEntry
 				for _, e := range p.pending {
+					e.mu.Lock()
 					if !e.sent {
 						toSend = append(toSend, e)
 					}
+					e.mu.Unlock()
 				}
 				p.mu.Unlock()
 

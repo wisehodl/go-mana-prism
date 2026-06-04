@@ -333,15 +333,13 @@ func TestRequestManager_Stream(t *testing.T) {
 		p.connect()
 		Eventually(t, envoy.IsConnected, "envoy should be reconnected")
 
-		// prevent activate() race between Stream and on-connect handler
-		time.Sleep(20 * time.Millisecond)
-
 		filters := [][]byte{[]byte(`{}`)}
 		id, _, _, err := m.Stream(filters)
 		assert.NoError(t, err)
 
 		Eventually(t, func() bool {
-			return len(EventsOf[ReqSendFailed](obs)) == 1
+			// on connect event handler may race with Stream()
+			return len(EventsOf[ReqSendFailed](obs)) >= 1
 		}, "expected ReqSendFailed observable")
 		failed := EventsOf[ReqSendFailed](obs)
 		assert.Equal(t, id, failed[0].SubID)
