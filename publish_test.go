@@ -195,8 +195,36 @@ func TestEventPublisher(t *testing.T) {
 	})
 
 	t.Run("publish while disconnected times out", func(t *testing.T) {
-		// do not connect; Publish with short timeout
-		// assert timeout error; Never: EVENT on p.sent
+		p, envoy := newMockEnvoy(t)
+		// do not connect
+
+		pub := NewEventPublisher(envoy)
+		t.Cleanup(pub.Close)
+
+		ch := make(chan error, 1)
+		go func() {
+			_, _, err := pub.Publish(
+				"dddd4444", []byte(`{"id":"dddd4444"}`), NegativeTestTimeout)
+			ch <- err
+		}()
+
+		Eventually(t, func() bool {
+			select {
+			case err := <-ch:
+				return err != nil
+			default:
+				return false
+			}
+		}, "Publish did not return a timeout error")
+
+		Never(t, func() bool {
+			select {
+			case <-p.sent:
+				return true
+			default:
+				return false
+			}
+		}, "EVENT envelope should not be sent while disconnected")
 	})
 
 	t.Run("held event sent on connect", func(t *testing.T) {
