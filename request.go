@@ -157,11 +157,11 @@ func NewRequestManager(e *Envoy) *RequestManager {
 		ctx:      ctx,
 		cancel:   cancel,
 		observer: e.Observer(),
-		handler:  e.Handler(),
 	}
 
-	if m.handler != nil {
+	if e.Handler() != nil {
 		comp := component.FromContext(ctx)
+		m.handler = e.Handler()
 		m.logger = slog.New(m.handler).With(slog.Any("component", comp))
 	}
 

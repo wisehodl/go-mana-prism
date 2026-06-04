@@ -2,6 +2,8 @@ package prism
 
 import (
 	"context"
+	"git.wisehodl.dev/jay/go-mana-component"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -30,14 +32,18 @@ type AuthManager struct {
 	inbox  <-chan InboxMessage
 	events <-chan OutboundPoolEvent
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	mu     sync.Mutex
-	wg     sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
+	mu      sync.Mutex
+	wg      sync.WaitGroup
+	handler slog.Handler
+	logger  *slog.Logger
 }
 
 func NewAuthManager(e *Envoy, respond func(string) ([]byte, error)) *AuthManager {
-	ctx, cancel := context.WithCancel(e.Context())
+	ctx, cancel := context.WithCancel(
+		component.MustExtend(e.Context(), "auth_manager"))
+
 	m := &AuthManager{
 		envoy:   e,
 		respond: respond,
@@ -46,6 +52,13 @@ func NewAuthManager(e *Envoy, respond func(string) ([]byte, error)) *AuthManager
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+
+	if e.Handler() != nil {
+		comp := component.FromContext(ctx)
+		m.handler = e.Handler()
+		m.logger = slog.New(m.handler).With(slog.Any("component", comp))
+	}
+
 	m.wg.Go(m.routeInbox)
 	m.wg.Go(m.handleEvents)
 	return m
@@ -83,6 +96,10 @@ func (m *AuthManager) routeInbox() {
 			if err := m.envoy.Send([]byte(envelope.EncloseAuthResponse(signed))); err != nil {
 				m.envoy.Observer().Record(msg.ID, AuthResponseFailed{Err: err, At: time.Now()})
 				continue
+			}
+
+			if m.logger != nil {
+				m.logger.Info("responded to auth", "challenge", challenge)
 			}
 
 			m.envoy.Observer().Record(msg.ID, AuthResponseSent{At: time.Now()})
