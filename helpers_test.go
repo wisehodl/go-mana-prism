@@ -95,6 +95,11 @@ func (p *mockPool) disconnect() {
 		ID: p.url, Kind: honeybee.EventDisconnected, At: time.Now()}
 }
 
+func (p *mockPool) dialFail(err error) {
+	p.events <- honeybee.PoolEvent{
+		ID: p.url, Kind: honeybee.EventDialFailed, Err: err, At: time.Now()}
+}
+
 func (p *mockPool) receive(data []byte) {
 	p.inbox <- honeybee.InboxMessage{
 		ID:         p.url,

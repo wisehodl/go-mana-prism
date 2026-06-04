@@ -29,6 +29,7 @@ type EmbassyEventKind int
 const (
 	EventConnected EmbassyEventKind = iota
 	EventDisconnected
+	EventDialFailed
 	EventEmbassyUnknown
 )
 
@@ -38,15 +39,18 @@ func mapEmbassyEvent(kind honeybee.PoolEventKind) EmbassyEventKind {
 		return EventConnected
 	case honeybee.EventDisconnected:
 		return EventDisconnected
+	case honeybee.EventDialFailed:
+		return EventDialFailed
 	default:
 		return EventEmbassyUnknown
 	}
 }
 
-type OutboundPoolEvent struct {
+type PoolEvent struct {
 	ID   string
 	Kind EmbassyEventKind
 	At   time.Time
+	Err  error
 }
 
 type InboxMessage struct {
@@ -85,7 +89,7 @@ func WithEmbassyObserver(o observer.Observer) EmbassyOption {
 type Embassy struct {
 	pool      EmbassyPlugin
 	envoys    map[string]*Envoy
-	eventSubs map[string]chan<- OutboundPoolEvent
+	eventSubs map[string]chan<- PoolEvent
 	inboxSubs map[string]chan<- InboxMessage
 
 	ctx      context.Context
@@ -111,7 +115,7 @@ func NewEmbassy(
 	e := &Embassy{
 		pool:      pool,
 		envoys:    make(map[string]*Envoy),
-		eventSubs: make(map[string]chan<- OutboundPoolEvent),
+		eventSubs: make(map[string]chan<- PoolEvent),
 		inboxSubs: make(map[string]chan<- InboxMessage),
 		ctx:       ctx,
 		cancel:    cancel,
@@ -205,8 +209,8 @@ func (e *Embassy) send(url string, data []byte) error {
 	return e.pool.Send(url, data)
 }
 
-func (e *Embassy) subscribeEventsLock(url string) <-chan OutboundPoolEvent {
-	ch := make(chan OutboundPoolEvent)
+func (e *Embassy) subscribeEventsLock(url string) <-chan PoolEvent {
+	ch := make(chan PoolEvent)
 	e.eventSubs[url] = ch
 	return ch
 }
@@ -261,8 +265,8 @@ func (e *Embassy) routeEvents() {
 			select {
 			case <-e.ctx.Done():
 				return
-			case sub <- OutboundPoolEvent{
-				ID: ev.ID, Kind: mapEmbassyEvent(ev.Kind), At: ev.At,
+			case sub <- PoolEvent{
+				ID: ev.ID, Kind: mapEmbassyEvent(ev.Kind), At: ev.At, Err: ev.Err,
 			}:
 			}
 		}
@@ -312,9 +316,9 @@ type Envoy struct {
 	terminate         func()
 	queue             chan []byte
 	send              func(data []byte) error
-	events            <-chan OutboundPoolEvent
+	events            <-chan PoolEvent
 	inbox             <-chan InboxMessage
-	eventSubs         []chan<- OutboundPoolEvent
+	eventSubs         []chan<- PoolEvent
 	labelledInboxSubs map[string][]chan<- InboxMessage
 	inboxSubs         []chan<- InboxMessage
 
@@ -332,7 +336,7 @@ func newEnvoy(
 	url string,
 	terminate func(),
 	send func(data []byte) error,
-	events <-chan OutboundPoolEvent,
+	events <-chan PoolEvent,
 	inbox <-chan InboxMessage,
 	observer observer.Observer,
 	handler slog.Handler,
@@ -411,10 +415,10 @@ func (e *Envoy) Send(data []byte) error {
 	return e.send(data)
 }
 
-func (e *Envoy) SubscribeEvents() <-chan OutboundPoolEvent {
+func (e *Envoy) SubscribeEvents() <-chan PoolEvent {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	ch := make(chan OutboundPoolEvent)
+	ch := make(chan PoolEvent)
 	e.eventSubs = append(e.eventSubs, ch)
 	return ch
 }

@@ -60,12 +60,12 @@ func TestEnvoy_IsConnected(t *testing.T) {
 	ctx := component.MustNew(context.Background(), "prism", "test")
 	mu := sync.RWMutex{}
 	url := "wss://test"
-	events := make(chan OutboundPoolEvent)
+	events := make(chan PoolEvent)
 
 	envoy := newEnvoy(ctx, url, nil, nil, events, nil, nil, nil)
 	eventSub := envoy.SubscribeEvents()
 
-	gotEvents := []OutboundPoolEvent{}
+	gotEvents := []PoolEvent{}
 	go func() {
 		for ev := range eventSub {
 			mu.Lock()
@@ -74,7 +74,7 @@ func TestEnvoy_IsConnected(t *testing.T) {
 		}
 	}()
 
-	events <- OutboundPoolEvent{
+	events <- PoolEvent{
 		ID: url, Kind: EventConnected, At: time.Now()}
 
 	Eventually(t, func() bool {
@@ -86,12 +86,12 @@ func TestEnvoy_Events(t *testing.T) {
 	ctx := component.MustNew(context.Background(), "prism", "test")
 	mu := sync.RWMutex{}
 	url := "wss://test"
-	events := make(chan OutboundPoolEvent)
+	events := make(chan PoolEvent)
 
 	envoy := newEnvoy(ctx, url, nil, nil, events, nil, nil, nil)
 	eventSub := envoy.SubscribeEvents()
 
-	gotEvents := []OutboundPoolEvent{}
+	gotEvents := []PoolEvent{}
 	go func() {
 		for ev := range eventSub {
 			mu.Lock()
@@ -100,7 +100,7 @@ func TestEnvoy_Events(t *testing.T) {
 		}
 	}()
 
-	events <- OutboundPoolEvent{
+	events <- PoolEvent{
 		ID: url, Kind: EventConnected, At: time.Now()}
 
 	Eventually(t, func() bool {

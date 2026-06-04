@@ -69,7 +69,7 @@ type EventPublisher struct {
 	pending map[string]*pendingEntry // event id -> pending entry
 
 	inbox  <-chan InboxMessage
-	events <-chan OutboundPoolEvent
+	events <-chan PoolEvent
 
 	ctx    context.Context
 	cancel context.CancelFunc

@@ -30,7 +30,7 @@ type AuthManager struct {
 	challenge string
 
 	inbox  <-chan InboxMessage
-	events <-chan OutboundPoolEvent
+	events <-chan PoolEvent
 
 	ctx     context.Context
 	cancel  context.CancelFunc

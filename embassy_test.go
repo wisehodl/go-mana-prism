@@ -1,6 +1,7 @@
 package prism
 
 import (
+	"errors"
 	"git.wisehodl.dev/jay/go-honeybee"
 	"git.wisehodl.dev/jay/go-roots-ws"
 	"github.com/stretchr/testify/assert"
@@ -90,4 +91,59 @@ func TestEmbassy_Dispatch(t *testing.T) {
 	// envoy no longer in embassy
 	envoy = embassy.Call(p.url)
 	assert.Nil(t, envoy)
+}
+
+func TestEmbassy_DialFailed_Routing(t *testing.T) {
+	t.Run("routed to correct subscriber with Err set", func(t *testing.T) {
+		p, envoy := newMockEnvoy(t)
+		sub := envoy.SubscribeEvents()
+
+		dialErr := errors.New("connection refused")
+		p.dialFail(dialErr)
+
+		var got PoolEvent
+		Eventually(t, func() bool {
+			select {
+			case ev := <-sub:
+				got = ev
+				return true
+			default:
+				return false
+			}
+		}, "expected EventDialFailed to be routed to subscriber")
+
+		assert.Equal(t, EventDialFailed, got.Kind)
+		assert.ErrorIs(t, got.Err, dialErr)
+		assert.Equal(t, p.url, got.ID)
+	})
+
+	t.Run("not routed to unrelated envoy subscriber", func(t *testing.T) {
+		p := newMockPool(t)
+		url1 := "wss://peer1"
+		url2 := "wss://peer2"
+
+		added := make(chan struct{}, 2)
+		p.plugin.Connect = func(url string, opts ...honeybee.ConnectOption) error {
+			added <- struct{}{}
+			return nil
+		}
+
+		emb := NewEmbassy(p.ctx, p.plugin)
+		emb.Dispatch(url1)
+		emb.Dispatch(url2)
+
+		envoy2 := emb.Call(url2)
+		sub2 := envoy2.SubscribeEvents()
+
+		p.dialFail(errors.New("refused"))
+
+		Never(t, func() bool {
+			select {
+			case <-sub2:
+				return true
+			default:
+				return false
+			}
+		}, "EventDialFailed for a different peer must not reach unrelated subscriber")
+	})
 }

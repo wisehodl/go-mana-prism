@@ -115,7 +115,7 @@ type RequestManager struct {
 	reqs map[string]*request
 
 	envoy  *Envoy
-	events <-chan OutboundPoolEvent
+	events <-chan PoolEvent
 	inbox  <-chan InboxMessage
 
 	ctx      context.Context
