@@ -87,22 +87,22 @@ func newMockPool(t *testing.T) *mockPool {
 
 func (p *mockPool) connect() {
 	p.events <- honeybee.PoolEvent{
-		ID: p.url, Kind: honeybee.EventConnected, At: time.Now()}
+		URL: p.url, Kind: honeybee.EventConnected, At: time.Now()}
 }
 
 func (p *mockPool) disconnect() {
 	p.events <- honeybee.PoolEvent{
-		ID: p.url, Kind: honeybee.EventDisconnected, At: time.Now()}
+		URL: p.url, Kind: honeybee.EventDisconnected, At: time.Now()}
 }
 
 func (p *mockPool) dialFail(err error) {
 	p.events <- honeybee.PoolEvent{
-		ID: p.url, Kind: honeybee.EventDialFailed, Err: err, At: time.Now()}
+		URL: p.url, Kind: honeybee.EventDialFailed, Err: err, At: time.Now()}
 }
 
 func (p *mockPool) receive(data []byte) {
 	p.inbox <- honeybee.InboxMessage{
-		ID:         p.url,
+		URL:        p.url,
 		Data:       data,
 		ReceivedAt: time.Now(),
 	}

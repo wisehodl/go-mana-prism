@@ -26,7 +26,7 @@ func TestNoticeHandler(t *testing.T) {
 		}, "notice not delivered")
 
 		assert.Equal(t, "hello", got.Message)
-		assert.Equal(t, p.url, got.PeerID)
+		assert.Equal(t, p.url, got.Peer)
 		assert.False(t, got.Timestamp.IsZero())
 	})
 

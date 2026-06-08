@@ -103,7 +103,7 @@ func (p *EventPublisher) Publish(eventID string, eventJSON []byte, timeout time.
 		p.mu.Lock()
 		p.deregister(eventID)
 		p.mu.Unlock()
-		p.envoy.Observer().Record(p.envoy.PeerID(),
+		p.envoy.Observer().Record(p.envoy.URL(),
 			PublishTimeout{EventID: eventID, At: time.Now()})
 		p.deliver(entry, publishResult{err: errors.New("publish timeout")})
 	})
@@ -148,12 +148,12 @@ func (p *EventPublisher) trySend(entry *pendingEntry) error {
 
 	err := p.envoy.Send([]byte(envelope.EncloseEvent(entry.eventJSON)))
 	if err != nil {
-		p.envoy.Observer().Record(p.envoy.PeerID(),
+		p.envoy.Observer().Record(p.envoy.URL(),
 			PublishSendFailed{EventID: entry.eventID, Err: err, At: time.Now()})
 		return err
 	}
 	entry.sent = true
-	p.envoy.Observer().Record(p.envoy.PeerID(),
+	p.envoy.Observer().Record(p.envoy.URL(),
 		PublishDispatched{EventID: entry.eventID, At: time.Now()})
 	return nil
 }
@@ -188,10 +188,10 @@ func (p *EventPublisher) routeInbox() {
 			}
 
 			if accepted {
-				p.envoy.Observer().Record(msg.ID,
+				p.envoy.Observer().Record(msg.URL,
 					PublishAccepted{EventID: eventID, At: time.Now()})
 			} else {
-				p.envoy.Observer().Record(msg.ID,
+				p.envoy.Observer().Record(msg.URL,
 					PublishRejected{EventID: eventID, Message: message, At: time.Now()})
 			}
 			p.deliver(entry, publishResult{accepted: accepted, message: message})

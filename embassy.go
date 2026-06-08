@@ -30,6 +30,7 @@ const (
 	EventConnected EmbassyEventKind = iota
 	EventDisconnected
 	EventDialFailed
+	EventRetired
 	EventEmbassyUnknown
 )
 
@@ -41,20 +42,22 @@ func mapEmbassyEvent(kind honeybee.PoolEventKind) EmbassyEventKind {
 		return EventDisconnected
 	case honeybee.EventDialFailed:
 		return EventDialFailed
+	case honeybee.EventRetired:
+		return EventRetired
 	default:
 		return EventEmbassyUnknown
 	}
 }
 
 type PoolEvent struct {
-	ID   string
+	URL  string
 	Kind EmbassyEventKind
 	At   time.Time
 	Err  error
 }
 
 type InboxMessage struct {
-	ID         string
+	URL        string
 	Data       []byte
 	ReceivedAt time.Time
 }
@@ -249,7 +252,7 @@ func (e *Embassy) routeEvents() {
 				return
 			}
 
-			url, err := honeybee.NormalizeURL(ev.ID)
+			url, err := honeybee.NormalizeURL(ev.URL)
 			if err != nil {
 				continue
 			}
@@ -266,7 +269,7 @@ func (e *Embassy) routeEvents() {
 			case <-e.ctx.Done():
 				return
 			case sub <- PoolEvent{
-				ID: ev.ID, Kind: mapEmbassyEvent(ev.Kind), At: ev.At, Err: ev.Err,
+				URL: ev.URL, Kind: mapEmbassyEvent(ev.Kind), At: ev.At, Err: ev.Err,
 			}:
 			}
 		}
@@ -283,7 +286,7 @@ func (e *Embassy) routeInbox() {
 				return
 			}
 
-			url, err := honeybee.NormalizeURL(ev.ID)
+			url, err := honeybee.NormalizeURL(ev.URL)
 			if err != nil {
 				continue
 			}
@@ -300,7 +303,7 @@ func (e *Embassy) routeInbox() {
 			case <-e.ctx.Done():
 				return
 			case sub <- InboxMessage{
-				ID: ev.ID, Data: ev.Data, ReceivedAt: ev.ReceivedAt}:
+				URL: ev.URL, Data: ev.Data, ReceivedAt: ev.ReceivedAt}:
 			}
 		}
 	}
@@ -318,9 +321,9 @@ type Envoy struct {
 	send              func(data []byte) error
 	events            <-chan PoolEvent
 	inbox             <-chan InboxMessage
-	eventSubs         []chan<- PoolEvent
-	labelledInboxSubs map[string][]chan<- InboxMessage
-	inboxSubs         []chan<- InboxMessage
+	eventSubs         []chan PoolEvent
+	labelledInboxSubs map[string][]chan InboxMessage
+	inboxSubs         []chan InboxMessage
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -350,7 +353,7 @@ func newEnvoy(
 		send:              send,
 		events:            events,
 		inbox:             inbox,
-		labelledInboxSubs: make(map[string][]chan<- InboxMessage),
+		labelledInboxSubs: make(map[string][]chan InboxMessage),
 		ctx:               ctx,
 		cancel:            cancel,
 		observer:          observer,
@@ -378,7 +381,7 @@ func (e *Envoy) Context() context.Context {
 	return e.ctx
 }
 
-func (e *Envoy) PeerID() string {
+func (e *Envoy) URL() string {
 	return e.url
 }
 
@@ -408,7 +411,7 @@ func (e *Envoy) Dismiss() {
 
 	e.eventSubs = nil
 	e.inboxSubs = nil
-	e.labelledInboxSubs = make(map[string][]chan<- InboxMessage)
+	e.labelledInboxSubs = make(map[string][]chan InboxMessage)
 }
 
 func (e *Envoy) Send(data []byte) error {
@@ -423,6 +426,18 @@ func (e *Envoy) SubscribeEvents() <-chan PoolEvent {
 	return ch
 }
 
+func (e *Envoy) UnsubscribeEvents(ch <-chan PoolEvent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i, sub := range e.eventSubs {
+		if sub == ch {
+			e.eventSubs[i] = e.eventSubs[len(e.eventSubs)-1]
+			e.eventSubs = e.eventSubs[:len(e.eventSubs)-1]
+			return
+		}
+	}
+}
+
 func (e *Envoy) SubscribeInbox(labels []string) <-chan InboxMessage {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -430,7 +445,7 @@ func (e *Envoy) SubscribeInbox(labels []string) <-chan InboxMessage {
 	e.inboxSubs = append(e.inboxSubs, ch)
 	for _, label := range labels {
 		if _, ok := e.labelledInboxSubs[label]; !ok {
-			e.labelledInboxSubs[label] = make([]chan<- InboxMessage, 0)
+			e.labelledInboxSubs[label] = make([]chan InboxMessage, 0)
 		}
 		e.labelledInboxSubs[label] = append(e.labelledInboxSubs[label], ch)
 	}

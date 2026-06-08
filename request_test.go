@@ -111,7 +111,7 @@ func TestRequestManager_Stream(t *testing.T) {
 			return len(EventsOf[ReqDispatched](obs)) == 1
 		}, "expected ReqDispatched observable")
 		dispatched := EventsOf[ReqDispatched](obs)
-		assert.Equal(t, id, dispatched[0].SubID)
+		assert.Equal(t, id, dispatched[0].ID)
 	})
 
 	t.Run("does not send req when disconnected", func(t *testing.T) {
@@ -186,7 +186,7 @@ func TestRequestManager_Stream(t *testing.T) {
 			return len(EventsOf[FirstEventReceived](obs)) == 1
 		}, "expected FirstEventReceived observable")
 		first := EventsOf[FirstEventReceived](obs)
-		assert.Equal(t, id, first[0].SubID)
+		assert.Equal(t, id, first[0].ID)
 		assert.False(t, first[0].ReceivedAt.IsZero())
 	})
 
@@ -247,7 +247,7 @@ func TestRequestManager_Stream(t *testing.T) {
 			return len(EventsOf[StreamEOSEReceived](obs)) == 1
 		}, "expected StreamEOSEReceived observable")
 		eoseEvents := EventsOf[StreamEOSEReceived](obs)
-		assert.Equal(t, id, eoseEvents[0].SubID)
+		assert.Equal(t, id, eoseEvents[0].ID)
 	})
 
 	t.Run("closed deregisters and signals caller", func(t *testing.T) {
@@ -289,7 +289,7 @@ func TestRequestManager_Stream(t *testing.T) {
 			return len(EventsOf[ClosedReceived](obs)) == 1
 		}, "expected ClosedReceived observable")
 		closedEvents := EventsOf[ClosedReceived](obs)
-		assert.Equal(t, id, closedEvents[0].SubID)
+		assert.Equal(t, id, closedEvents[0].ID)
 		assert.Equal(t, "error: test", closedEvents[0].Message)
 
 		Eventually(t, func() bool {
@@ -342,7 +342,7 @@ func TestRequestManager_Stream(t *testing.T) {
 			return len(EventsOf[ReqSendFailed](obs)) >= 1
 		}, "expected ReqSendFailed observable")
 		failed := EventsOf[ReqSendFailed](obs)
-		assert.Equal(t, id, failed[0].SubID)
+		assert.Equal(t, id, failed[0].ID)
 		assert.NotNil(t, failed[0].Err)
 
 		Never(t, func() bool {
@@ -486,7 +486,7 @@ func TestRequestManager_Query(t *testing.T) {
 			return len(EventsOf[QueryEOSEReceived](obs)) == 1
 		}, "expected QueryEOSEReceived observable")
 		qeose := EventsOf[QueryEOSEReceived](obs)
-		assert.Equal(t, querySubID, qeose[0].SubID)
+		assert.Equal(t, querySubID, qeose[0].ID)
 
 		// CLOSE envelope should have been sent after EOSE
 		var closeEnv []byte

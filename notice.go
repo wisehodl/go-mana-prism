@@ -14,7 +14,7 @@ type NoticeReceived struct {
 }
 
 type Notice struct {
-	PeerID    string
+	Peer      string
 	Message   string
 	Timestamp time.Time
 }
@@ -62,11 +62,11 @@ func (h *NoticeHandler) route() {
 			}
 			now := time.Now()
 			h.notices <- Notice{
-				PeerID:    msg.ID,
+				Peer:      msg.URL,
 				Message:   message,
 				Timestamp: now,
 			}
-			h.envoy.Observer().Record(msg.ID, NoticeReceived{
+			h.envoy.Observer().Record(msg.URL, NoticeReceived{
 				Message: message,
 				At:      now,
 			})

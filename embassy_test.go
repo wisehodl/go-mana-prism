@@ -42,16 +42,16 @@ func TestEmbassy_Dispatch(t *testing.T) {
 	}()
 
 	p.events <- honeybee.PoolEvent{
-		ID: p.url, Kind: honeybee.EventConnected, At: time.Now()}
+		URL: p.url, Kind: honeybee.EventConnected, At: time.Now()}
 	p.events <- honeybee.PoolEvent{
-		ID: "wss://other", Kind: honeybee.EventConnected, At: time.Now()}
+		URL: "wss://other", Kind: honeybee.EventConnected, At: time.Now()}
 	p.inbox <- honeybee.InboxMessage{
-		ID:         p.url,
+		URL:        p.url,
 		Data:       envelope.EncloseEvent([]byte("{}")),
 		ReceivedAt: time.Now(),
 	}
 	p.inbox <- honeybee.InboxMessage{
-		ID:         "wss://other",
+		URL:        "wss://other",
 		Data:       envelope.EncloseEvent([]byte("{}")),
 		ReceivedAt: time.Now(),
 	}
@@ -114,7 +114,7 @@ func TestEmbassy_DialFailed_Routing(t *testing.T) {
 
 		assert.Equal(t, EventDialFailed, got.Kind)
 		assert.ErrorIs(t, got.Err, dialErr)
-		assert.Equal(t, p.url, got.ID)
+		assert.Equal(t, p.url, got.URL)
 	})
 
 	t.Run("not routed to unrelated envoy subscriber", func(t *testing.T) {

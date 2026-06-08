@@ -18,13 +18,13 @@ import (
 // ----------------------------------------------------------------------------
 
 type ReqEvent struct {
-	PeerID     string
+	Peer       string
 	ReceivedAt time.Time
 	Data       []byte
 }
 
 type ReqClosed struct {
-	PeerID     string
+	Peer       string
 	ReceivedAt time.Time
 	Data       string
 }
@@ -34,38 +34,38 @@ type ReqClosed struct {
 // ----------------------------------------------------------------------------
 
 type ReqDispatched struct {
-	SubID        string
+	ID           string
 	DispatchedAt time.Time
 }
 
 type ReqSendFailed struct {
-	SubID string
-	Err   error
-	At    time.Time
+	ID  string
+	Err error
+	At  time.Time
 }
 
 type FirstEventReceived struct {
-	SubID      string
+	ID         string
 	ReceivedAt time.Time
 }
 
 type StreamEOSEReceived struct {
-	SubID      string
+	ID         string
 	ReceivedAt time.Time
 }
 
 type QueryEOSEReceived struct {
-	SubID      string
+	ID         string
 	ReceivedAt time.Time
 }
 
 type MissedEOSE struct {
-	SubID string
-	At    time.Time
+	ID string
+	At time.Time
 }
 
 type ClosedReceived struct {
-	SubID      string
+	ID         string
 	ReceivedAt time.Time
 	Message    string
 }
@@ -259,8 +259,8 @@ func (m *RequestManager) Query(
 			return result, &cl, nil
 		case <-ctx.Done():
 			// query timed out
-			m.observer.Record(m.envoy.PeerID(),
-				MissedEOSE{SubID: id, At: time.Now()})
+			m.observer.Record(m.envoy.URL(),
+				MissedEOSE{ID: id, At: time.Now()})
 			if m.logger != nil {
 				m.logger.Warn("missed eose", "req", id)
 			}
@@ -328,15 +328,15 @@ func (m *RequestManager) activate(req *request) {
 	go func() {
 		err := m.envoy.Send(envelope.EncloseReq(req.id, req.filters))
 		if err != nil {
-			m.observer.Record(m.envoy.PeerID(),
-				ReqSendFailed{SubID: req.id, Err: err, At: time.Now()})
+			m.observer.Record(m.envoy.URL(),
+				ReqSendFailed{ID: req.id, Err: err, At: time.Now()})
 			if m.logger != nil {
 				m.logger.Warn("req send failed", "req", req.id, "error", err)
 			}
 			return
 		}
-		m.observer.Record(m.envoy.PeerID(),
-			ReqDispatched{SubID: req.id, DispatchedAt: time.Now()})
+		m.observer.Record(m.envoy.URL(),
+			ReqDispatched{ID: req.id, DispatchedAt: time.Now()})
 		if m.logger != nil {
 			m.logger.Debug("req sent", "req", req.id)
 		}
@@ -424,13 +424,13 @@ func (m *RequestManager) routeEvent(msg InboxMessage) {
 		req.firstEventSeen = true
 		reqSubID := req.id
 		receivedAt := msg.ReceivedAt
-		go m.observer.Record(m.envoy.PeerID(),
-			FirstEventReceived{SubID: reqSubID, ReceivedAt: receivedAt})
+		go m.observer.Record(m.envoy.URL(),
+			FirstEventReceived{ID: reqSubID, ReceivedAt: receivedAt})
 	}
 	m.mu.Unlock()
 
 	req.buffer <- ReqEvent{
-		PeerID:     msg.ID,
+		Peer:       msg.URL,
 		ReceivedAt: msg.ReceivedAt,
 		Data:       event,
 	}
@@ -453,11 +453,11 @@ func (m *RequestManager) routeEOSE(msg InboxMessage) {
 	reqSubID := req.id
 	receivedAt := msg.ReceivedAt
 	if req.isQuery {
-		go m.observer.Record(m.envoy.PeerID(),
-			QueryEOSEReceived{SubID: reqSubID, ReceivedAt: receivedAt})
+		go m.observer.Record(m.envoy.URL(),
+			QueryEOSEReceived{ID: reqSubID, ReceivedAt: receivedAt})
 	} else {
-		go m.observer.Record(m.envoy.PeerID(),
-			StreamEOSEReceived{SubID: reqSubID, ReceivedAt: receivedAt})
+		go m.observer.Record(m.envoy.URL(),
+			StreamEOSEReceived{ID: reqSubID, ReceivedAt: receivedAt})
 	}
 	if req.active && req.isQuery {
 		// manually cleanup query state
@@ -493,9 +493,9 @@ func (m *RequestManager) routeClosed(msg InboxMessage) {
 	}
 	reqSubID := req.id
 	receivedAt := msg.ReceivedAt
-	go m.observer.Record(m.envoy.PeerID(),
+	go m.observer.Record(m.envoy.URL(),
 		ClosedReceived{
-			SubID:      reqSubID,
+			ID:         reqSubID,
 			ReceivedAt: receivedAt,
 			Message:    message,
 		})
@@ -504,7 +504,7 @@ func (m *RequestManager) routeClosed(msg InboxMessage) {
 	}
 	req.closedOnce.Do(func() {
 		req.closed <- ReqClosed{
-			PeerID:     msg.ID,
+			Peer:       msg.URL,
 			ReceivedAt: msg.ReceivedAt,
 			Data:       message,
 		}

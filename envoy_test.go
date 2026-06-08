@@ -75,7 +75,7 @@ func TestEnvoy_IsConnected(t *testing.T) {
 	}()
 
 	events <- PoolEvent{
-		ID: url, Kind: EventConnected, At: time.Now()}
+		URL: url, Kind: EventConnected, At: time.Now()}
 
 	Eventually(t, func() bool {
 		return envoy.IsConnected()
@@ -101,7 +101,7 @@ func TestEnvoy_Events(t *testing.T) {
 	}()
 
 	events <- PoolEvent{
-		ID: url, Kind: EventConnected, At: time.Now()}
+		URL: url, Kind: EventConnected, At: time.Now()}
 
 	Eventually(t, func() bool {
 		mu.RLock()
@@ -133,12 +133,12 @@ func TestEnvoy_Inbox(t *testing.T) {
 	}()
 
 	inbox <- InboxMessage{
-		ID:         url,
+		URL:        url,
 		Data:       envelope.EncloseEvent([]byte("{}")),
 		ReceivedAt: time.Now(),
 	}
 	inbox <- InboxMessage{
-		ID:         url,
+		URL:        url,
 		Data:       envelope.EncloseOK("id", true, "ok"),
 		ReceivedAt: time.Now(),
 	}
