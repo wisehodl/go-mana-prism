@@ -292,18 +292,20 @@ func (m *RequestManager) Cancel(id string) error {
 	}
 
 	if req.active {
-		go func() {
-			err := m.envoy.Send(envelope.EncloseClose(id))
-			if err != nil {
-				if m.logger != nil {
-					m.logger.Warn("close send failed", "req", req.id, "error", err)
+		if m.envoy.IsConnected() {
+			go func() {
+				err := m.envoy.Send(envelope.EncloseClose(id))
+				if err != nil {
+					if m.logger != nil {
+						m.logger.Warn("close send failed", "req", req.id, "error", err)
+					}
+					return
 				}
-				return
-			}
-			if m.logger != nil {
-				m.logger.Debug("close sent", "req", req.id)
-			}
-		}()
+				if m.logger != nil {
+					m.logger.Debug("close sent", "req", req.id)
+				}
+			}()
+		}
 		req.active = false
 	}
 
@@ -324,7 +326,7 @@ func (m *RequestManager) Close() {
 	defer m.mu.Unlock()
 
 	for id, req := range m.reqs {
-		if req.active {
+		if m.envoy.IsConnected() && req.active {
 			go m.envoy.Send(envelope.EncloseClose(id))
 		}
 		req.deregisterOnce.Do(func() {
@@ -336,6 +338,9 @@ func (m *RequestManager) Close() {
 }
 
 func (m *RequestManager) activate(req *request) {
+	if !m.envoy.IsConnected() {
+		return
+	}
 	req.active = true
 	go func() {
 		err := m.envoy.Send(envelope.EncloseReq(req.id, req.filters))
@@ -477,18 +482,20 @@ func (m *RequestManager) routeEOSE(msg InboxMessage) {
 		req.active = false
 		close(req.buffer)
 		delete(m.reqs, req.id)
-		go func() {
-			err := m.envoy.Send(envelope.EncloseClose(subID))
-			if err != nil {
-				if m.logger != nil {
-					m.logger.Warn("close send failed", "req", req.id, "error", err)
+		if m.envoy.IsConnected() {
+			go func() {
+				err := m.envoy.Send(envelope.EncloseClose(subID))
+				if err != nil {
+					if m.logger != nil {
+						m.logger.Warn("close send failed", "req", req.id, "error", err)
+					}
+					return
 				}
-				return
-			}
-			if m.logger != nil {
-				m.logger.Debug("close sent", "req", req.id)
-			}
-		}()
+				if m.logger != nil {
+					m.logger.Debug("close sent", "req", req.id)
+				}
+			}()
+		}
 	}
 }
 
