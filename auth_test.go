@@ -166,7 +166,9 @@ func TestAuthManager(t *testing.T) {
 			return len(calls) == 2 && calls[1] == "def"
 		}, "callback not called twice with both challenges")
 
-		assert.GreaterOrEqual(t, len(p.sent), 2)
+		Eventually(t, func() bool {
+			return len(p.sent) >= 2
+		}, "expected 2 auth responses in pool")
 	})
 
 	t.Run("malformed AUTH ignored", func(t *testing.T) {
