@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base32"
+	"errors"
 	"fmt"
 	"git.wisehodl.dev/jay/go-mana-component"
 	"git.wisehodl.dev/jay/go-mana-prism/observer"
@@ -11,6 +12,14 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+)
+
+// ----------------------------------------------------------------------------
+// Errors
+// ----------------------------------------------------------------------------
+
+var (
+	ErrMissedEOSE = errors.New("timeout: missed eose")
 )
 
 // ----------------------------------------------------------------------------
@@ -258,13 +267,16 @@ func (m *RequestManager) Query(
 			}
 			return result, &cl, nil
 		case <-ctx.Done():
-			// query timed out
-			m.observer.Record(m.envoy.URL(),
-				MissedEOSE{ID: id, At: time.Now()})
-			if m.logger != nil {
-				m.logger.Warn("missed eose", "req", id)
+			if ctx.Err() == context.DeadlineExceeded {
+				// query timed out
+				m.observer.Record(m.envoy.URL(),
+					MissedEOSE{ID: id, At: time.Now()})
+				if m.logger != nil {
+					m.logger.Warn("missed eose", "req", id)
+				}
+				m.Cancel(id)
+				return result, nil, ErrMissedEOSE
 			}
-			m.Cancel(id)
 			return result, nil, nil
 		}
 	}

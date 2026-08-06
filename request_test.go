@@ -558,7 +558,7 @@ func TestRequestManager_Query(t *testing.T) {
 		start := time.Now()
 		events, closed, err := m.Query(filters, queryTimeout)
 		elapsed := time.Since(start)
-		assert.NoError(t, err)
+		assert.ErrorIs(t, err, ErrMissedEOSE)
 
 		assert.GreaterOrEqual(t, elapsed, queryTimeout)
 		assert.Len(t, events, 2)
