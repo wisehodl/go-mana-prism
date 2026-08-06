@@ -85,16 +85,20 @@ func (m *AuthManager) routeInbox() {
 			m.mu.Unlock()
 
 			now := time.Now()
-			m.envoy.Observer().Record(msg.URL, ChallengeReceived{Challenge: challenge, At: now})
+			m.envoy.Observer().Record(msg.URL,
+				ChallengeReceived{Challenge: challenge, At: now})
 
 			signed, err := m.respond(challenge)
 			if err != nil {
-				m.envoy.Observer().Record(msg.URL, AuthResponseFailed{Err: err, At: time.Now()})
+				m.envoy.Observer().Record(msg.URL,
+					AuthResponseFailed{Err: err, At: time.Now()})
 				continue
 			}
 
-			if err := m.envoy.Send([]byte(envelope.EncloseAuthResponse(signed))); err != nil {
-				m.envoy.Observer().Record(msg.URL, AuthResponseFailed{Err: err, At: time.Now()})
+			if err := m.envoy.Send(
+				[]byte(envelope.EncloseAuthResponse(signed))); err != nil {
+				m.envoy.Observer().Record(msg.URL,
+					AuthResponseFailed{Err: err, At: time.Now()})
 				continue
 			}
 
