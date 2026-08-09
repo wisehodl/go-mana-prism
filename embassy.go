@@ -396,12 +396,12 @@ func (e *Envoy) Dismiss() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	for _, sub := range e.eventSubs {
-		close(sub)
+	for _, ch := range e.eventSubs {
+		close(ch)
 	}
 
-	for _, sub := range e.inboxSubs {
-		close(sub)
+	for _, ch := range e.inboxSubs {
+		close(ch)
 	}
 
 	e.eventSubs = nil
@@ -416,7 +416,7 @@ func (e *Envoy) Send(data []byte) error {
 func (e *Envoy) SubscribeEvents() <-chan PoolEvent {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	ch := make(chan PoolEvent)
+	ch := make(chan PoolEvent, 64)
 	e.eventSubs = append(e.eventSubs, ch)
 	return ch
 }
@@ -424,8 +424,8 @@ func (e *Envoy) SubscribeEvents() <-chan PoolEvent {
 func (e *Envoy) UnsubscribeEvents(ch <-chan PoolEvent) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	for i, sub := range e.eventSubs {
-		if sub == ch {
+	for i, subCh := range e.eventSubs {
+		if subCh == ch {
 			e.eventSubs[i] = e.eventSubs[len(e.eventSubs)-1]
 			e.eventSubs = e.eventSubs[:len(e.eventSubs)-1]
 			return
@@ -436,7 +436,7 @@ func (e *Envoy) UnsubscribeEvents(ch <-chan PoolEvent) {
 func (e *Envoy) SubscribeInbox(labels []string) <-chan InboxMessage {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	ch := make(chan InboxMessage)
+	ch := make(chan InboxMessage, 64)
 	e.inboxSubs = append(e.inboxSubs, ch)
 	for _, label := range labels {
 		if _, ok := e.labelledInboxSubs[label]; !ok {
@@ -464,7 +464,10 @@ func (e *Envoy) publishEvents() {
 			case EventDisconnected:
 				e.connected = false
 			}
-			subs := e.eventSubs
+			subs := make([]chan PoolEvent, 0, len(e.eventSubs))
+			for _, s := range e.eventSubs {
+				subs = append(subs, s)
+			}
 			e.mu.Unlock()
 
 			for _, ch := range subs {
