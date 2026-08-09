@@ -99,18 +99,21 @@ func (p *EventPublisher) Publish(eventID string, eventJSON []byte, timeout time.
 		result:    make(chan publishResult, 1),
 	}
 
-	entry.timer = time.AfterFunc(timeout, func() {
-		p.mu.Lock()
-		p.deregister(eventID)
-		p.mu.Unlock()
-		p.envoy.Observer().Record(p.envoy.URL(),
-			PublishTimeout{EventID: eventID, At: time.Now()})
-		p.deliver(entry, publishResult{err: errors.New("publish timeout")})
-	})
-
 	p.mu.Lock()
 	p.pending[eventID] = entry
 	connected := p.envoy.IsConnected()
+
+	// use timeout if positive and nonzero
+	if timeout > time.Duration(0) {
+		entry.timer = time.AfterFunc(timeout, func() {
+			p.mu.Lock()
+			p.deregister(eventID)
+			p.mu.Unlock()
+			p.envoy.Observer().Record(p.envoy.URL(),
+				PublishTimeout{EventID: eventID, At: time.Now()})
+			p.deliver(entry, publishResult{err: errors.New("publish timeout")})
+		})
+	}
 	p.mu.Unlock()
 
 	if connected {
