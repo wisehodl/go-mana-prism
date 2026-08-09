@@ -144,7 +144,6 @@ type request struct {
 	active         bool
 	firstEventSeen bool
 
-	buffer chan ReqEvent
 	events chan ReqEvent
 	closed chan ReqClosed
 
@@ -214,19 +213,12 @@ func (m *RequestManager) newStream(
 		}
 		id = fmt.Sprintf("%s:%s", label, generateID())
 	}
-	buffer := make(chan ReqEvent, 64)
+	events := make(chan ReqEvent, 64)
 	closed := make(chan ReqClosed, 1)
-
-	events := make(chan ReqEvent)
-	go func() {
-		bufferedPipe(buffer, events)
-		close(events)
-	}()
 
 	req := &request{
 		id:      id,
 		filters: filters,
-		buffer:  buffer,
 		events:  events,
 		closed:  closed,
 		isQuery: isQuery,
@@ -310,7 +302,7 @@ func (m *RequestManager) Cancel(id string) error {
 	}
 
 	req.deregisterOnce.Do(func() {
-		close(req.buffer)
+		close(req.events)
 		close(req.closed)
 	})
 	delete(m.reqs, id)
@@ -330,7 +322,7 @@ func (m *RequestManager) Close() {
 			go m.envoy.Send(envelope.EncloseClose(id))
 		}
 		req.deregisterOnce.Do(func() {
-			close(req.buffer)
+			close(req.events)
 			close(req.closed)
 		})
 		delete(m.reqs, id)
@@ -363,7 +355,7 @@ func (m *RequestManager) activate(req *request) {
 func (m *RequestManager) deregister(req *request) {
 	req.active = false
 	req.deregisterOnce.Do(func() {
-		close(req.buffer)
+		close(req.events)
 		close(req.closed)
 	})
 	delete(m.reqs, req.id)
@@ -424,17 +416,15 @@ func (m *RequestManager) dispatchInbox(msg InboxMessage) {
 	}
 }
 
-// routeEvent, routeEOSE, and routeClosed use blocking sends into req.buffer,
-// which reads eagerly into a slice buffer and cannot block the router.
 func (m *RequestManager) routeEvent(msg InboxMessage) {
 	subID, event, err := envelope.FindSubscriptionEvent(msg.Data)
 	if err != nil {
 		return
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	req, ok := m.reqs[subID]
 	if !ok {
-		m.mu.Unlock()
 		return
 	}
 	if !req.firstEventSeen {
@@ -444,18 +434,14 @@ func (m *RequestManager) routeEvent(msg InboxMessage) {
 		go m.observer.Record(m.envoy.URL(),
 			FirstEventReceived{ID: reqSubID, ReceivedAt: receivedAt})
 	}
-	m.mu.Unlock()
 
-	req.buffer <- ReqEvent{
+	req.events <- ReqEvent{
 		Peer:       msg.URL,
 		ReceivedAt: msg.ReceivedAt,
 		Data:       event,
 	}
 }
 
-// routeEvent, routeEOSE, and routeClosed are always called sequentially from
-// the same routeInbox goroutine via dispatchInbox. This makes it safe for
-// routeEOSE to close req.buffer: no concurrent routeEvent send can race it.
 func (m *RequestManager) routeEOSE(msg InboxMessage) {
 	subID, err := envelope.FindEOSE(msg.Data)
 	if err != nil {
@@ -480,7 +466,7 @@ func (m *RequestManager) routeEOSE(msg InboxMessage) {
 		// manually cleanup query state
 		// specifically, do not close req.closed or events can be missed
 		req.active = false
-		close(req.buffer)
+		close(req.events)
 		delete(m.reqs, req.id)
 		if m.envoy.IsConnected() {
 			go func() {
