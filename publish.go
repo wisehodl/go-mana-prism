@@ -170,7 +170,10 @@ func (p *EventPublisher) routeInbox() {
 		select {
 		case <-p.ctx.Done():
 			return
-		case msg := <-p.inbox:
+		case msg, ok := <-p.inbox:
+			if !ok {
+				return
+			}
 			eventID, accepted, message, err := envelope.FindOK(msg.Data)
 			if err != nil {
 				continue
@@ -204,7 +207,10 @@ func (p *EventPublisher) handleEvents() {
 		select {
 		case <-p.ctx.Done():
 			return
-		case ev := <-p.events:
+		case ev, ok := <-p.events:
+			if !ok {
+				return
+			}
 			switch ev.Kind {
 			case EventConnected:
 				p.mu.Lock()

@@ -74,7 +74,10 @@ func (m *AuthManager) routeInbox() {
 		select {
 		case <-m.ctx.Done():
 			return
-		case msg := <-m.inbox:
+		case msg, ok := <-m.inbox:
+			if !ok {
+				return
+			}
 			challenge, err := envelope.FindAuthChallenge(msg.Data)
 			if err != nil {
 				continue
@@ -116,7 +119,10 @@ func (m *AuthManager) handleEvents() {
 		select {
 		case <-m.ctx.Done():
 			return
-		case ev := <-m.events:
+		case ev, ok := <-m.events:
+			if !ok {
+				return
+			}
 			if ev.Kind == EventDisconnected {
 				m.mu.Lock()
 				m.challenge = ""

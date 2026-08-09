@@ -55,21 +55,24 @@ func (h *NoticeHandler) route() {
 		select {
 		case <-h.ctx.Done():
 			return
-		case msg := <-h.inbox:
+		case msg, ok := <-h.inbox:
+			if !ok {
+				return
+			}
 			message, err := envelope.FindNotice(msg.Data)
 			if err != nil {
 				continue
 			}
 			now := time.Now()
+			h.envoy.Observer().Record(msg.URL, NoticeReceived{
+				Message: message,
+				At:      now,
+			})
 			h.notices <- Notice{
 				Peer:      msg.URL,
 				Message:   message,
 				Timestamp: now,
 			}
-			h.envoy.Observer().Record(msg.URL, NoticeReceived{
-				Message: message,
-				At:      now,
-			})
 		}
 	}
 }
