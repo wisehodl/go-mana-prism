@@ -143,17 +143,18 @@ func (e *Embassy) Dispatch(url string) error {
 		return fmt.Errorf("invalid url: %w", err)
 	}
 
-	e.mu.RLock()
+	e.mu.Lock()
 	_, exists := e.envoys[url]
 	if exists {
-		e.mu.RUnlock()
+		e.mu.Unlock()
 		return fmt.Errorf("already dispatched: %s", url)
 	}
-	e.mu.RUnlock()
 
-	e.mu.Lock()
-
-	e.pool.Connect(url)
+	err = e.pool.Connect(url)
+	if err != nil {
+		e.mu.Unlock()
+		return err
+	}
 
 	terminate := func() { e.dismiss(url) }
 	send := func(data []byte) error { return e.send(url, data) }
