@@ -214,7 +214,7 @@ func (e *Embassy) send(url string, data []byte) error {
 }
 
 func (e *Embassy) subscribeEventsLock(url string) <-chan PoolEvent {
-	ch := make(chan PoolEvent)
+	ch := make(chan PoolEvent, 256)
 	e.eventSubs[url] = ch
 	return ch
 }
@@ -229,7 +229,7 @@ func (e *Embassy) unsubscribeEventsLock(url string) {
 }
 
 func (e *Embassy) subscribeInboxLock(url string) <-chan InboxMessage {
-	ch := make(chan InboxMessage)
+	ch := make(chan InboxMessage, 256)
 	e.inboxSubs[url] = ch
 	return ch
 }
@@ -258,21 +258,18 @@ func (e *Embassy) routeEvents() {
 				continue
 			}
 
-			e.mu.RLock()
-			sub, ok := e.eventSubs[url]
-			e.mu.RUnlock()
+			e.mu.Lock()
+			ch, ok := e.eventSubs[url]
 
 			if !ok {
+				e.mu.Unlock()
 				continue
 			}
 
-			select {
-			case <-e.ctx.Done():
-				return
-			case sub <- PoolEvent{
+			ch <- PoolEvent{
 				URL: ev.URL, Kind: mapEmbassyEvent(ev.Kind), At: ev.At, Err: ev.Err,
-			}:
 			}
+			e.mu.Unlock()
 		}
 	}
 }
@@ -292,20 +289,17 @@ func (e *Embassy) routeInbox() {
 				continue
 			}
 
-			e.mu.RLock()
-			sub, ok := e.inboxSubs[url]
-			e.mu.RUnlock()
+			e.mu.Lock()
+			ch, ok := e.inboxSubs[url]
 
 			if !ok {
+				e.mu.Unlock()
 				continue
 			}
 
-			select {
-			case <-e.ctx.Done():
-				return
-			case sub <- InboxMessage{
-				URL: ev.URL, Data: ev.Data, ReceivedAt: ev.ReceivedAt}:
-			}
+			ch <- InboxMessage{
+				URL: ev.URL, Data: ev.Data, ReceivedAt: ev.ReceivedAt}
+			e.mu.Unlock()
 		}
 	}
 }
